@@ -1,0 +1,1278 @@
+package com.ym.ai_story_studio_server.mq;
+
+import com.rabbitmq.client.Channel;
+import com.ym.ai_story_studio_server.client.VectorEngineClient;
+import com.ym.ai_story_studio_server.client.VectorEngineClient.ImageApiResponse;
+import com.ym.ai_story_studio_server.config.AiProperties;
+import com.ym.ai_story_studio_server.dto.ai.VideoGenerateRequest;
+import com.ym.ai_story_studio_server.entity.Job;
+import com.ym.ai_story_studio_server.exception.BusinessException;
+import com.ym.ai_story_studio_server.entity.CharacterLibrary;
+import com.ym.ai_story_studio_server.entity.ProjectCharacter;
+import com.ym.ai_story_studio_server.entity.ProjectScene;
+import com.ym.ai_story_studio_server.entity.PropLibrary;
+import com.ym.ai_story_studio_server.entity.ProjectProp;
+import com.ym.ai_story_studio_server.entity.SceneLibrary;
+import com.ym.ai_story_studio_server.mapper.AssetMapper;
+import com.ym.ai_story_studio_server.mapper.CharacterLibraryMapper;
+import com.ym.ai_story_studio_server.mapper.JobMapper;
+import com.ym.ai_story_studio_server.mapper.ProjectCharacterMapper;
+import com.ym.ai_story_studio_server.mapper.ProjectSceneMapper;
+import com.ym.ai_story_studio_server.mapper.PropLibraryMapper;
+import com.ym.ai_story_studio_server.mapper.ProjectPropMapper;
+import com.ym.ai_story_studio_server.mapper.SceneLibraryMapper;
+import com.ym.ai_story_studio_server.mapper.StoryboardShotMapper;
+import com.ym.ai_story_studio_server.service.AiTextService;
+import com.ym.ai_story_studio_server.service.AiVideoService;
+import com.ym.ai_story_studio_server.service.AssetCreationService;
+import com.ym.ai_story_studio_server.service.ChargingService;
+import com.ym.ai_story_studio_server.service.StorageService;
+import com.ym.ai_story_studio_server.util.UserContext;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.stereotype.Component;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.net.URL;
+import java.net.URLConnection;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+/**
+ * MQ消息消费者
+ * 
+ * <p>监听队列并处理任务消息
+ * 
+ * @author AI Story Studio
+ * @since 1.0.0
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class MQConsumer {
+
+    private final VectorEngineClient vectorEngineClient;
+    private final StorageService storageService;
+    private final AssetCreationService assetCreationService;
+    private final ChargingService chargingService;
+    private final AiVideoService aiVideoService;
+    private final AiTextService aiTextService;
+    private final JobMapper jobMapper;
+    private final AiProperties aiProperties;
+    private final AssetMapper assetMapper;
+    private final StoryboardShotMapper storyboardShotMapper;
+    private final ProjectCharacterMapper projectCharacterMapper;
+    private final CharacterLibraryMapper characterLibraryMapper;
+    private final ProjectSceneMapper projectSceneMapper;
+    private final PropLibraryMapper propLibraryMapper;
+    private final ProjectPropMapper projectPropMapper;
+    private final SceneLibraryMapper sceneLibraryMapper;
+    private final ObjectMapper objectMapper;
+
+    /**
+     * 消费批量生成分镜图任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_BATCH_SHOT_IMAGE)
+    public void handleBatchShotImage(BatchTaskMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 批量生成分镜图 ==========");
+        log.info("队列: {}, jobId: {}, shotCount: {}", 
+                MQConstant.QUEUE_BATCH_SHOT_IMAGE, msg.getJobId(), msg.getTargetIds().size());
+
+        try {
+            executeBatchShotImageGeneration(msg);
+            
+            // 手动确认消息
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            
+            // 拒绝消息，不重新入队（进入死信队列）
+            channel.basicNack(deliveryTag, false, false);
+            
+            // 更新Job状态为失败
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费单个分镜图生成任务(支持自定义prompt)
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_SINGLE_SHOT_IMAGE)
+    public void handleSingleShotImage(SingleShotImageMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 单个分镜图生成 ==========");
+        log.info("队列: {}, jobId: {}, shotId: {}, customPrompt: {}", 
+                MQConstant.QUEUE_SINGLE_SHOT_IMAGE, msg.jobId(), msg.shotId(), 
+                msg.customPrompt() != null ? "自定义" : "默认");
+
+        try {
+            executeSingleShotImageGeneration(msg);
+            
+            // 手动确认消息
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.jobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.jobId(), e);
+            
+            // 拒绝消息，不重新入队（进入死信队列）
+            channel.basicNack(deliveryTag, false, false);
+            
+            // 更新Job状态为失败
+            updateJobFailed(msg.jobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费批量生成视频任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_BATCH_VIDEO)
+    public void handleBatchVideo(BatchTaskMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 批量生成视频 ==========");
+        log.info("队列: {}, jobId: {}, shotCount: {}", 
+                MQConstant.QUEUE_BATCH_VIDEO, msg.getJobId(), msg.getTargetIds().size());
+
+        try {
+            executeBatchVideoGeneration(msg);
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            channel.basicNack(deliveryTag, false, false);
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费批量生成角色画像任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_BATCH_CHARACTER_IMAGE)
+    public void handleBatchCharacterImage(BatchTaskMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 批量生成角色画像 ==========");
+        log.info("队列: {}, jobId: {}, characterCount: {}", 
+                MQConstant.QUEUE_BATCH_CHARACTER_IMAGE, msg.getJobId(), msg.getTargetIds().size());
+
+        try {
+            executeBatchCharacterImageGeneration(msg);
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            channel.basicNack(deliveryTag, false, false);
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费批量生成场景画像任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_BATCH_SCENE_IMAGE)
+    public void handleBatchSceneImage(BatchTaskMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 批量生成场景画像 ==========");
+        log.info("队列: {}, jobId: {}, sceneCount: {}", 
+                MQConstant.QUEUE_BATCH_SCENE_IMAGE, msg.getJobId(), msg.getTargetIds().size());
+
+        try {
+            executeBatchSceneImageGeneration(msg);
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            channel.basicNack(deliveryTag, false, false);
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费批量生成道具画像任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_BATCH_PROP_IMAGE)
+    public void handleBatchPropImage(BatchTaskMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 批量生成道具画像 ==========");
+        log.info("队列: {}, jobId: {}, propCount: {}", 
+                MQConstant.QUEUE_BATCH_PROP_IMAGE, msg.getJobId(), msg.getTargetIds().size());
+
+        try {
+            executeBatchPropImageGeneration(msg);
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            channel.basicNack(deliveryTag, false, false);
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费单个分镜视频生成任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_SINGLE_SHOT_VIDEO)
+    public void handleSingleShotVideo(SingleShotVideoMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 单个分镜视频生成 ==========");
+        log.info("队列: {}, jobId: {}, shotId: {}, promptLength: {}", 
+                MQConstant.QUEUE_SINGLE_SHOT_VIDEO, msg.getJobId(), msg.getShotId(), 
+                msg.getPrompt() != null ? msg.getPrompt().length() : 0);
+
+        try {
+            executeSingleShotVideoGeneration(msg);
+            
+            // 手动确认消息
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            
+            // 拒绝消息，不重新入队（进入死信队列）
+            channel.basicNack(deliveryTag, false, false);
+            
+            // 更新Job状态为失败
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 消费文本解析任务
+     */
+    @RabbitListener(queues = MQConstant.QUEUE_TEXT_PARSING)
+    public void handleTextParsing(TextParsingMessage msg, Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        
+        log.info("========== 消费消息: 文本解析 ==========");
+        log.info("队列: {}, jobId: {}, textLength: {}", 
+                MQConstant.QUEUE_TEXT_PARSING, msg.getJobId(), msg.getRawText().length());
+
+        try {
+            executeTextParsing(msg);
+            channel.basicAck(deliveryTag, false);
+            log.info("消息确认成功 - jobId: {}", msg.getJobId());
+            
+        } catch (Exception e) {
+            log.error("消息处理失败 - jobId: {}", msg.getJobId(), e);
+            channel.basicNack(deliveryTag, false, false);
+            updateJobFailed(msg.getJobId(), e.getMessage());
+        }
+    }
+
+    // ==================== 私有执行方法 ====================
+
+    /**
+     * 执行单个分镜图生成(支持自定义prompt和参考图)
+     */
+    private void executeSingleShotImageGeneration(SingleShotImageMessage msg) {
+        Long jobId = msg.jobId();
+        Long shotId = msg.shotId();
+        Long userId = msg.userId();
+        Long projectId = msg.projectId();
+        String customPrompt = msg.customPrompt();
+        String referenceImageUrl = msg.referenceImageUrl();
+    
+        log.info("执行单个分镜图生成 - jobId: {}, shotId: {}, customPrompt: {}, referenceImageUrl: {}", 
+                jobId, shotId, customPrompt != null ? "[自定义内容]" : "使用分镜剧本", referenceImageUrl != null ? "有" : "无");
+        updateJobRunning(jobId);
+    
+        // 应用配置
+        String finalAspectRatio = msg.aspectRatio() != null ? msg.aspectRatio() :
+                aiProperties.getImage().getDefaultAspectRatio();
+        String finalModel = msg.model() != null ? msg.model() :
+                (aiProperties.getImage().getJimengProxyEnabled() ?
+                        aiProperties.getImage().getJimengModel() :
+                        aiProperties.getImage().getDefaultModel());
+    
+        log.info("应用配置 - aspectRatio: {}, model: {}", finalAspectRatio, finalModel);
+    
+        try {
+            // 1. 查询分镜
+            var shot = storyboardShotMapper.selectById(shotId);
+            if (shot == null) {
+                throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.SHOT_NOT_FOUND);
+            }
+    
+            // 2. 准备prompt: 优先使用customPrompt，否则使用分镜剧本
+            String prompt = customPrompt != null ? customPrompt : 
+                          (shot.getScriptText() != null ? shot.getScriptText() : 
+                           "为分镜生成图片 - shotId: " + shotId);
+    
+            // 日志中不显示完整的内嵌提示词，只显示用户自定义部分
+            String logPrompt = customPrompt != null ? "[自定义内容]" : prompt;
+            log.info("调用AI生成图片 - shotId: {}, prompt: {}, referenceImageUrl: {}", shotId, logPrompt, referenceImageUrl != null ? "有" : "无");
+    
+            // 3. 调用AI生成图片(支持参考图)
+            VectorEngineClient.ImageApiResponse apiResponse = vectorEngineClient.generateImage(
+                    prompt,
+                    finalModel,
+                    finalAspectRatio,
+                    referenceImageUrl  // 传入参考图，实现图生图
+            );
+
+            if (apiResponse == null || apiResponse.data() == null || apiResponse.data().isEmpty()) {
+                throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "AI返回空响应");
+            }
+
+            String imageData = apiResponse.data().get(0).url();
+            log.info("AI生成成功 - shotId: {}, imageData类型: {}", shotId, 
+                    isBase64(imageData) ? "base64" : "url");
+
+            // 4. 上传到OSS
+            String ossUrl = processImageAndUploadToOss(imageData, jobId, 0);
+            log.info("上传OSS成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+            // 5. 保存到Asset表
+            assetCreationService.createAssetWithVersion(
+                    projectId,
+                    "SHOT",
+                    shotId,
+                    "SHOT_IMG",
+                    ossUrl,
+                    prompt,
+                    finalModel,
+                    finalAspectRatio,
+                    userId
+            );
+            log.info("Asset保存成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+            // 6. 扣积分
+            Map<String, Object> metaData = new HashMap<>();
+            metaData.put("model", finalModel);
+            metaData.put("aspectRatio", finalAspectRatio);
+            metaData.put("imageUrl", ossUrl);
+            metaData.put("shotId", shotId);
+            metaData.put("customPrompt", customPrompt != null);
+
+            chargingService.charge(
+                    ChargingService.ChargingRequest.builder()
+                            .jobId(jobId)
+                            .bizType("IMAGE_GENERATION")
+                            .modelCode(finalModel)
+                            .quantity(1)
+                            .metaData(metaData)
+                            .build()
+            );
+            log.info("积分扣除成功 - shotId: {}", shotId);
+
+            // 7. 更新Job为成功，并设置resultUrl
+            List<String> imageUrls = new java.util.ArrayList<>();
+            imageUrls.add(ossUrl);
+            updateJobSuccessWithImages(jobId, 1, 0, imageUrls);
+            log.info("单个分镜图生成完成 - shotId: {}", shotId);
+
+        } catch (Exception e) {
+            log.error("单个分镜图生成失败 - shotId: {}", shotId, e);
+            updateJobFailed(jobId, e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 执行批量分镜图生成
+     */
+    private void executeBatchShotImageGeneration(BatchTaskMessage msg) {
+        Long jobId = msg.getJobId();
+        List<Long> shotIds = msg.getTargetIds();
+        String mode = msg.getMode();
+        Integer countPerItem = msg.getCountPerItem();
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+
+        updateJobRunning(jobId);
+
+        String finalAspectRatio = msg.getAspectRatio() != null ? msg.getAspectRatio() :
+                aiProperties.getImage().getDefaultAspectRatio();
+        String finalModel = msg.getModel() != null ? msg.getModel() :
+                (aiProperties.getImage().getJimengProxyEnabled() ?
+                        aiProperties.getImage().getJimengModel() :
+                        aiProperties.getImage().getDefaultModel());
+
+        log.info("应用配置 - aspectRatio: {}, model: {}", finalAspectRatio, finalModel);
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failCount = new AtomicInteger(0);
+
+        for (int i = 0; i < shotIds.size(); i++) {
+            Long shotId = shotIds.get(i);
+            log.info("处理分镜 [{}/{}] - shotId: {}", i + 1, shotIds.size(), shotId);
+
+            try {
+                var shot = storyboardShotMapper.selectById(shotId);
+                if (shot == null) {
+                    log.warn("分镜不存在,跳过 - shotId: {}", shotId);
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                if ("MISSING".equals(mode)) {
+                    var assetQuery = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.ym.ai_story_studio_server.entity.Asset>();
+                    assetQuery.eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerType, "SHOT")
+                              .eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerId, shotId)
+                              .eq(com.ym.ai_story_studio_server.entity.Asset::getAssetType, "SHOT_IMG")
+                              .eq(com.ym.ai_story_studio_server.entity.Asset::getProjectId, projectId);
+
+                    long imageCount = assetMapper.selectCount(assetQuery);
+                    if (imageCount > 0) {
+                        log.info("MISSING模式 - 分镜已有图片资产,跳过 - shotId: {}", shotId);
+                        successCount.incrementAndGet();
+                        continue;
+                    }
+                }
+
+                String prompt = shot.getScriptText() != null ? shot.getScriptText() :
+                               "为分镜生成图片 - shotId: " + shotId;
+
+                // 为每个分镜生成多张图片
+                for (int j = 0; j < countPerItem; j++) {
+                    try {
+                        // 1. 调用AI生成图片
+                        log.info("调用AI生成图片 [{}/{}] - shotId: {}, prompt: {}", j + 1, countPerItem, shotId, prompt);
+                        VectorEngineClient.ImageApiResponse apiResponse = vectorEngineClient.generateImage(
+                                prompt,
+                                finalModel,
+                                finalAspectRatio,
+                                null
+                        );
+
+                        if (apiResponse == null || apiResponse.data() == null || apiResponse.data().isEmpty()) {
+                            log.error("AI返回空响应 - shotId: {}", shotId);
+                            throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "AI返回空响应");
+                        }
+
+                        String imageData = apiResponse.data().get(0).url();
+                        log.info("AI生成成功 - shotId: {}, imageData类型: {}", shotId, 
+                                isBase64(imageData) ? "base64" : "url");
+
+                        // 2. 上传到OSS
+                        String ossUrl = processImageAndUploadToOss(imageData, jobId, j);
+                        log.info("上传OSS成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+                        // 3. 保存到Asset表
+                        assetCreationService.createAssetWithVersion(
+                                projectId,
+                                "SHOT",
+                                shotId,
+                                "SHOT_IMG",
+                                ossUrl,
+                                prompt,
+                                finalModel,
+                                finalAspectRatio,
+                                userId
+                        );
+                        log.info("Asset保存成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+                        // 4. 扣积分（每张图片扣一次）
+                        Map<String, Object> metaData = new HashMap<>();
+                        metaData.put("model", finalModel);
+                        metaData.put("aspectRatio", finalAspectRatio);
+                        metaData.put("imageUrl", ossUrl);
+                        metaData.put("shotId", shotId);
+
+                        chargingService.charge(
+                                ChargingService.ChargingRequest.builder()
+                                        .jobId(jobId)
+                                        .bizType("IMAGE_GENERATION")
+                                        .modelCode(finalModel)
+                                        .quantity(1)
+                                        .metaData(metaData)
+                                        .build()
+                        );
+                        log.info("积分扣除成功 - shotId: {}", shotId);
+
+                    } catch (Exception e) {
+                        log.error("生成单张图片失败 [{}/{}] - shotId: {}", j + 1, countPerItem, shotId, e);
+                        // 单张失败不影响其他张
+                    }
+                }
+
+                successCount.incrementAndGet();
+                log.info("分镜图生成完成 - shotId: {}, 数量: {}", shotId, countPerItem);
+
+            } catch (Exception e) {
+                failCount.incrementAndGet();
+                log.error("分镜图生成失败 - shotId: {}", shotId, e);
+            }
+
+            updateJobProgress(jobId, i + 1, shotIds.size());
+        }
+
+        log.info("批量生成分镜图完成 - 成功: {}, 失败: {}", successCount.get(), failCount.get());
+        updateJobSuccess(jobId, successCount.get(), failCount.get());
+    }
+
+    private void executeBatchVideoGeneration(BatchTaskMessage msg) {
+        Long jobId = msg.getJobId();
+        List<Long> shotIds = msg.getTargetIds();
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+
+        updateJobRunning(jobId);
+
+        String finalAspectRatio = msg.getAspectRatio() != null ? msg.getAspectRatio() :
+                aiProperties.getVideo().getDefaultAspectRatio();
+        String finalModel = msg.getModel() != null ? msg.getModel() :
+                aiProperties.getVideo().getModel();
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failCount = new AtomicInteger(0);
+
+        for (int i = 0; i < shotIds.size(); i++) {
+            Long shotId = shotIds.get(i);
+            log.info("处理分镜视频 [{}/{}] - shotId: {}", i + 1, shotIds.size(), shotId);
+
+            try {
+                var shot = storyboardShotMapper.selectById(shotId);
+                if (shot == null) {
+                    log.warn("分镜不存在,跳过 - shotId: {}", shotId);
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                String prompt = shot.getScriptText() != null ? shot.getScriptText() :
+                               "为分镜生成视频 - shotId: " + shotId;
+
+                VideoGenerateRequest request = new VideoGenerateRequest(
+                        prompt,
+                        finalAspectRatio,
+                        aiProperties.getVideo().getDefaultDuration(),
+                        null,
+                        projectId
+                );
+
+                UserContext.setUserId(userId);
+                try {
+                    aiVideoService.generateVideo(request);
+                    log.info("分镜视频生成任务已提交 - shotId: {}", shotId);
+                } finally {
+                    UserContext.clear();
+                }
+
+                successCount.incrementAndGet();
+
+            } catch (Exception e) {
+                failCount.incrementAndGet();
+                log.error("分镜视频生成失败 - shotId: {}", shotId, e);
+            }
+
+            updateJobProgress(jobId, i + 1, shotIds.size());
+        }
+
+        updateJobSuccess(jobId, successCount.get(), failCount.get());
+    }
+
+    /**
+     * 执行单个分镜视频生成（支持自定义prompt和资产资源）
+     */
+    private void executeSingleShotVideoGeneration(SingleShotVideoMessage msg) {
+        Long jobId = msg.getJobId();
+        Long shotId = msg.getShotId();
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+        String prompt = msg.getPrompt();
+        String aspectRatio = msg.getAspectRatio();
+
+        log.info("执行单个分镜视频生成 - jobId: {}, shotId: {}, promptLength: {}",
+                jobId, shotId, prompt != null ? prompt.length() : 0);
+        updateJobRunning(jobId);
+
+        // 应用配置
+        String finalAspectRatio = aspectRatio != null ? aspectRatio :
+                aiProperties.getVideo().getDefaultAspectRatio();
+        String finalModel = aiProperties.getVideo().getModel();
+
+        log.info("应用配置 - aspectRatio: {}, model: {}", finalAspectRatio, finalModel);
+
+        try {
+            // 1. 查询分镜
+            var shot = storyboardShotMapper.selectById(shotId);
+            if (shot == null) {
+                throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.SHOT_NOT_FOUND);
+            }
+
+            // 2. 准备prompt
+            String finalPrompt = prompt != null ? prompt :
+                    (shot.getScriptText() != null ? shot.getScriptText() :
+                            "为分镜生成视频 - shotId: " + shotId);
+
+            log.info("调用AI生成视频 - shotId: {}, promptLength: {}", shotId, finalPrompt.length());
+
+            // 3. 调用AI生成视频
+            VideoGenerateRequest request = new VideoGenerateRequest(
+                    finalPrompt,
+                    finalAspectRatio,
+                    aiProperties.getVideo().getDefaultDuration(),
+                    null,  // referenceImageUrl - 可以后续扩展支持参考图
+                    projectId
+            );
+
+            UserContext.setUserId(userId);
+            try {
+                // 调用视频生成服务（异步处理）
+                aiVideoService.generateVideo(request);
+                log.info("视频生成任务已提交 - shotId: {}", shotId);
+
+                // 4. 扣积分
+                Map<String, Object> metaData = new HashMap<>();
+                metaData.put("model", finalModel);
+                metaData.put("aspectRatio", finalAspectRatio);
+                metaData.put("shotId", shotId);
+                metaData.put("customPrompt", prompt != null);
+
+                chargingService.charge(
+                        ChargingService.ChargingRequest.builder()
+                                .jobId(jobId)
+                                .bizType("VIDEO_GENERATION")
+                                .modelCode(finalModel)
+                                .quantity(1)
+                                .metaData(metaData)
+                                .build()
+                );
+                log.info("积分扣除成功 - shotId: {}", shotId);
+
+                // 5. 更新Job为成功（注意：视频生成是异步的，这里只是任务提交成功）
+                updateJobSuccess(jobId, 1, 0);
+                log.info("单个分镜视频生成任务提交完成 - shotId: {}", shotId);
+
+            } finally {
+                UserContext.clear();
+            }
+
+        } catch (Exception e) {
+            log.error("单个分镜视频生成失败 - shotId: {}", shotId, e);
+            updateJobFailed(jobId, e.getMessage());
+            throw e;
+        }
+    }
+
+    private void executeBatchCharacterImageGeneration(BatchTaskMessage msg) {
+        Long jobId = msg.getJobId();
+        List<Long> characterIds = msg.getTargetIds(); // 这是 project_character 的 ID
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+
+        log.info("执行批量角色画像生成 - jobId: {}, characterCount: {}", jobId, characterIds.size());
+        updateJobRunning(jobId);
+
+        String finalAspectRatio = msg.getAspectRatio() != null ? msg.getAspectRatio() : "1:1";
+        String finalModel = msg.getModel() != null ? msg.getModel() :
+                (aiProperties.getImage().getJimengProxyEnabled() ?
+                        aiProperties.getImage().getJimengModel() :
+                        aiProperties.getImage().getDefaultModel());
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failCount = new AtomicInteger(0);
+        
+        // 收集所有生成的图片URL（用于Job的allImageUrls）
+        List<String> allGeneratedImageUrls = new java.util.ArrayList<>();
+
+        for (int i = 0; i < characterIds.size(); i++) {
+            Long projectCharacterId = characterIds.get(i);
+
+            try {
+                // 1. 查询项目角色
+                ProjectCharacter projectCharacter = projectCharacterMapper.selectById(projectCharacterId);
+                if (projectCharacter == null) {
+                    log.warn("项目角色不存在 - projectCharacterId: {}", projectCharacterId);
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 2. 查询角色库中的角色
+                CharacterLibrary character = characterLibraryMapper.selectById(projectCharacter.getLibraryCharacterId());
+                if (character == null) {
+                    log.warn("角色库角色不存在 - libraryCharacterId: {}", projectCharacter.getLibraryCharacterId());
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 3. MISSING模式：检查是否已有图片
+                if ("MISSING".equals(msg.getMode()) && character.getThumbnailUrl() != null) {
+                    log.info("MISSING模式 - 角色已有图片,跳过 - characterId: {}", character.getId());
+                    successCount.incrementAndGet();
+                    continue;
+                }
+
+                // 4. 构建提示词：使用角色描述生成角色立绘
+                String description = projectCharacter.getOverrideDescription() != null ?
+                        projectCharacter.getOverrideDescription() : character.getDescription();
+                String prompt = String.format("角色立绘，%s，%s，高质量，精细绘制，全身像",
+                        character.getName(), description != null ? description : "");
+
+                log.info("生成角色图片 - characterId: {}, name: {}, prompt: {}", character.getId(), character.getName(), prompt);
+
+                // 5. 调用向量引擎生成图片
+                UserContext.setUserId(userId);
+                try {
+                    ImageApiResponse response = vectorEngineClient.generateImage(
+                            prompt,
+                            finalModel,
+                            finalAspectRatio,
+                            null  // 无参考图片
+                    );
+
+                    // 6. 解析图片结果
+                    if (response == null || response.data() == null || response.data().isEmpty()) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "图片生成结果为空");
+                    }
+
+                    // 获取所有返回的图片数据（即梦模型返回4张图片）
+                    List<ImageApiResponse.ImageData> allResults = response.data();
+                    log.info("AI返回 {} 张图片 - characterId: {}", allResults.size(), character.getId());
+
+                    // 7. 处理所有图片并上传到OSS
+                    List<String> ossUrls = new java.util.ArrayList<>();
+                    for (int j = 0; j < allResults.size(); j++) {
+                        String imageData = allResults.get(j).url();
+                        if (imageData == null) {
+                            log.warn("第 {} 张图片数据为空,跳过", j + 1);
+                            continue;
+                        }
+                        String ossUrl = processImageAndUploadToOss(imageData, jobId, i * 10 + j);
+                        ossUrls.add(ossUrl);
+                        allGeneratedImageUrls.add(ossUrl);
+                        log.info("上传图片 [{}/{}] 到OSS成功 - ossUrl: {}", j + 1, allResults.size(), ossUrl);
+                    }
+
+                    if (ossUrls.isEmpty()) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "无法获取有效的图片数据");
+                    }
+
+                    // 8. 使用第一张图片更新角色库的缩略图URL
+                    String primaryOssUrl = ossUrls.get(0);
+                    character.setThumbnailUrl(primaryOssUrl);
+                    characterLibraryMapper.updateById(character);
+
+                    log.info("角色图片生成成功 - characterId: {}, 总图片数: {}, 主图: {}", 
+                            character.getId(), ossUrls.size(), primaryOssUrl);
+
+                    // 9. 扣除积分（按批次扣费，不按图片张数）
+                    Map<String, Object> metaData = new HashMap<>();
+                    metaData.put("characterId", character.getId());
+                    metaData.put("characterName", character.getName());
+                    metaData.put("model", finalModel);
+                    metaData.put("imageCount", ossUrls.size());
+                    metaData.put("allImageUrls", ossUrls);
+
+                    chargingService.charge(
+                            ChargingService.ChargingRequest.builder()
+                                    .jobId(jobId)
+                                    .bizType("IMAGE_GENERATION")
+                                    .modelCode(finalModel)
+                                    .quantity(1)  // 按批次扣费
+                                    .metaData(metaData)
+                                    .build()
+                    );
+
+                    successCount.incrementAndGet();
+
+                } finally {
+                    UserContext.clear();
+                }
+
+            } catch (Exception e) {
+                failCount.incrementAndGet();
+                log.error("角色图片生成失败 - projectCharacterId: {}", projectCharacterId, e);
+            }
+
+            updateJobProgress(jobId, i + 1, characterIds.size());
+        }
+
+        log.info("批量生成角色画像完成 - 成功: {}, 失败: {}, 总图片数: {}", 
+                successCount.get(), failCount.get(), allGeneratedImageUrls.size());
+        
+        // 更新Job状态并保存所有图片URL到metaJson
+        updateJobSuccessWithImages(jobId, successCount.get(), failCount.get(), allGeneratedImageUrls);
+    }
+
+    private void executeBatchSceneImageGeneration(BatchTaskMessage msg) {
+        Long jobId = msg.getJobId();
+        List<Long> sceneIds = msg.getTargetIds(); // 这是 project_scene 的 ID
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+
+        log.info("执行批量场景画像生成 - jobId: {}, sceneCount: {}", jobId, sceneIds.size());
+        updateJobRunning(jobId);
+
+        String finalAspectRatio = msg.getAspectRatio() != null ? msg.getAspectRatio() : "16:9";
+        String finalModel = msg.getModel() != null ? msg.getModel() :
+                (aiProperties.getImage().getJimengProxyEnabled() ?
+                        aiProperties.getImage().getJimengModel() :
+                        aiProperties.getImage().getDefaultModel());
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failCount = new AtomicInteger(0);
+
+        for (int i = 0; i < sceneIds.size(); i++) {
+            Long projectSceneId = sceneIds.get(i);
+
+            try {
+                // 1. 查询项目场景
+                ProjectScene projectScene = projectSceneMapper.selectById(projectSceneId);
+                if (projectScene == null) {
+                    log.warn("项目场景不存在 - projectSceneId: {}", projectSceneId);
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 2. 查询场景库中的场景
+                SceneLibrary scene = sceneLibraryMapper.selectById(projectScene.getLibrarySceneId());
+                if (scene == null) {
+                    log.warn("场景库场景不存在 - librarySceneId: {}", projectScene.getLibrarySceneId());
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 3. MISSING模式：检查是否已有图片
+                if ("MISSING".equals(msg.getMode()) && scene.getThumbnailUrl() != null) {
+                    log.info("MISSING模式 - 场景已有图片,跳过 - sceneId: {}", scene.getId());
+                    successCount.incrementAndGet();
+                    continue;
+                }
+
+                // 4. 构建提示词：使用场景描述生成场景图
+                String description = projectScene.getOverrideDescription() != null ?
+                        projectScene.getOverrideDescription() : scene.getDescription();
+                String sceneName = projectScene.getDisplayName() != null ?
+                        projectScene.getDisplayName() : scene.getName();
+                String prompt = String.format("场景画像，%s，%s，2D动漫风格，高质量高清，画质细腻，不要出现任何人物",
+                        sceneName, description != null ? description : "");
+
+                log.info("生成场景图片 - sceneId: {}, name: {}, prompt: {}", scene.getId(), sceneName, prompt);
+
+                // 5. 调用向量引擎生成图片
+                UserContext.setUserId(userId);
+                try {
+                    ImageApiResponse response = vectorEngineClient.generateImage(
+                            prompt,
+                            finalModel,
+                            finalAspectRatio,
+                            null  // 无参考图片
+                    );
+
+                    // 6. 解析图片结果
+                    if (response == null || response.data() == null || response.data().isEmpty()) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "图片生成结果为空");
+                    }
+
+                    // 获取图片URL或base64
+                    ImageApiResponse.ImageData firstResult = response.data().get(0);
+                    String imageData = firstResult.url();
+
+                    if (imageData == null) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "无法获取图片数据");
+                    }
+
+                    // 7. 上传到OSS
+                    String ossUrl = processImageAndUploadToOss(imageData, jobId, i);
+
+                    // 8. 更新场景库的缩略图URL
+                    scene.setThumbnailUrl(ossUrl);
+                    sceneLibraryMapper.updateById(scene);
+
+                    log.info("场景图片生成成功 - sceneId: {}, ossUrl: {}", scene.getId(), ossUrl);
+
+                    // 9. 扣除积分
+                    Map<String, Object> metaData = new HashMap<>();
+                    metaData.put("sceneId", scene.getId());
+                    metaData.put("sceneName", sceneName);
+                    metaData.put("model", finalModel);
+
+                    chargingService.charge(
+                            ChargingService.ChargingRequest.builder()
+                                    .jobId(jobId)
+                                    .bizType("IMAGE_GENERATION")
+                                    .modelCode(finalModel)
+                                    .quantity(1)
+                                    .metaData(metaData)
+                                    .build()
+                    );
+
+                    successCount.incrementAndGet();
+
+                } finally {
+                    UserContext.clear();
+                }
+
+            } catch (Exception e) {
+                failCount.incrementAndGet();
+                log.error("场景图片生成失败 - projectSceneId: {}", projectSceneId, e);
+            }
+
+            updateJobProgress(jobId, i + 1, sceneIds.size());
+        }
+
+        log.info("批量生成场景画像完成 - 成功: {}, 失败: {}", successCount.get(), failCount.get());
+        updateJobSuccess(jobId, successCount.get(), failCount.get());
+    }
+
+    private void executeBatchPropImageGeneration(BatchTaskMessage msg) {
+        Long jobId = msg.getJobId();
+        List<Long> propIds = msg.getTargetIds(); // 这是 project_prop 的 ID
+        Long userId = msg.getUserId();
+        Long projectId = msg.getProjectId();
+
+        log.info("执行批量道具画像生成 - jobId: {}, propCount: {}", jobId, propIds.size());
+        updateJobRunning(jobId);
+
+        String finalAspectRatio = msg.getAspectRatio() != null ? msg.getAspectRatio() : "1:1";
+        String finalModel = msg.getModel() != null ? msg.getModel() :
+                (aiProperties.getImage().getJimengProxyEnabled() ?
+                        aiProperties.getImage().getJimengModel() :
+                        aiProperties.getImage().getDefaultModel());
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failCount = new AtomicInteger(0);
+        
+        // 收集所有生成的图片URL（用于Job的allImageUrls）
+        List<String> allGeneratedImageUrls = new java.util.ArrayList<>();
+
+        for (int i = 0; i < propIds.size(); i++) {
+            Long projectPropId = propIds.get(i);
+
+            try {
+                // 1. 查询项目道具
+                ProjectProp projectProp = projectPropMapper.selectById(projectPropId);
+                if (projectProp == null) {
+                    log.warn("项目道具不存在 - projectPropId: {}", projectPropId);
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 2. 查询道具库中的道具
+                PropLibrary prop = propLibraryMapper.selectById(projectProp.getLibraryPropId());
+                if (prop == null) {
+                    log.warn("道具库道具不存在 - libraryPropId: {}", projectProp.getLibraryPropId());
+                    failCount.incrementAndGet();
+                    continue;
+                }
+
+                // 3. MISSING模式：检查是否已有图片
+                if ("MISSING".equals(msg.getMode()) && prop.getThumbnailUrl() != null) {
+                    log.info("MISSING模式 - 道具已有图片,跳过 - propId: {}", prop.getId());
+                    successCount.incrementAndGet();
+                    continue;
+                }
+
+                // 4. 构建提示词：使用道具描述生成道具图
+                String description = projectProp.getOverrideDescription() != null ?
+                        projectProp.getOverrideDescription() : prop.getDescription();
+                String propName = projectProp.getDisplayName() != null ?
+                        projectProp.getDisplayName() : prop.getName();
+                String prompt = String.format("道具画像，%s，%s，2D动漫风格，高质量高清，画质细腻，白色背景，单个物件",
+                        propName, description != null ? description : "");
+
+                log.info("生成道具图片 - propId: {}, name: {}, prompt: {}", prop.getId(), propName, prompt);
+
+                // 5. 调用向量引擎生成图片
+                UserContext.setUserId(userId);
+                try {
+                    ImageApiResponse response = vectorEngineClient.generateImage(
+                            prompt,
+                            finalModel,
+                            finalAspectRatio,
+                            null  // 无参考图片
+                    );
+
+                    // 6. 解析图片结果
+                    if (response == null || response.data() == null || response.data().isEmpty()) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "图片生成结果为空");
+                    }
+
+                    // 获取所有返回的图片数据（即梦模型返回4张图片）
+                    List<ImageApiResponse.ImageData> allResults = response.data();
+                    log.info("AI返回 {} 张图片 - propId: {}", allResults.size(), prop.getId());
+
+                    // 7. 处理所有图片并上传到OSS
+                    List<String> ossUrls = new java.util.ArrayList<>();
+                    for (int j = 0; j < allResults.size(); j++) {
+                        String imageData = allResults.get(j).url();
+                        if (imageData == null) {
+                            log.warn("第 {} 张图片数据为空,跳过", j + 1);
+                            continue;
+                        }
+                        String ossUrl = processImageAndUploadToOss(imageData, jobId, i * 10 + j);
+                        ossUrls.add(ossUrl);
+                        allGeneratedImageUrls.add(ossUrl);
+                        log.info("上传图片 [{}/{}] 到OSS成功 - ossUrl: {}", j + 1, allResults.size(), ossUrl);
+                    }
+
+                    if (ossUrls.isEmpty()) {
+                        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "无法获取有效的图片数据");
+                    }
+
+                    // 8. 使用第一张图片更新道具库的缩略图URL
+                    String primaryOssUrl = ossUrls.get(0);
+                    prop.setThumbnailUrl(primaryOssUrl);
+                    propLibraryMapper.updateById(prop);
+
+                    log.info("道具图片生成成功 - propId: {}, 总图片数: {}, 主图: {}", 
+                            prop.getId(), ossUrls.size(), primaryOssUrl);
+
+                    // 9. 扣除积分（按批次扣费，不按图片张数）
+                    Map<String, Object> metaData = new HashMap<>();
+                    metaData.put("propId", prop.getId());
+                    metaData.put("propName", propName);
+                    metaData.put("model", finalModel);
+                    metaData.put("imageCount", ossUrls.size());
+                    metaData.put("allImageUrls", ossUrls);
+
+                    chargingService.charge(
+                            ChargingService.ChargingRequest.builder()
+                                    .jobId(jobId)
+                                    .bizType("IMAGE_GENERATION")
+                                    .modelCode(finalModel)
+                                    .quantity(1)  // 按批次扣费
+                                    .metaData(metaData)
+                                    .build()
+                    );
+
+                    successCount.incrementAndGet();
+
+                } finally {
+                    UserContext.clear();
+                }
+
+            } catch (Exception e) {
+                failCount.incrementAndGet();
+                log.error("道具图片生成失败 - projectPropId: {}", projectPropId, e);
+            }
+
+            updateJobProgress(jobId, i + 1, propIds.size());
+        }
+
+        log.info("批量生成道具画像完成 - 成功: {}, 失败: {}, 总图片数: {}", 
+                successCount.get(), failCount.get(), allGeneratedImageUrls.size());
+        
+        // 更新Job状态并保存所有图片URL到metaJson
+        updateJobSuccessWithImages(jobId, successCount.get(), failCount.get(), allGeneratedImageUrls);
+    }
+
+    private void executeTextParsing(TextParsingMessage msg) {
+        log.info("执行文本解析 - jobId: {}", msg.getJobId());
+        updateJobRunning(msg.getJobId());
+        
+        UserContext.setUserId(msg.getUserId());
+        try {
+            aiTextService.generateText(new com.ym.ai_story_studio_server.dto.ai.TextGenerateRequest(
+                msg.getRawText(), null, null, msg.getProjectId()
+            ));
+            updateJobSuccess(msg.getJobId(), 1, 0);
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    // ==================== Job状态更新方法 ====================
+
+    private void updateJobRunning(Long jobId) {
+        Job job = new Job();
+        job.setId(jobId);
+        job.setStatus("RUNNING");
+        jobMapper.updateById(job);
+        log.info("Job状态更新为RUNNING - jobId: {}", jobId);
+    }
+
+    private void updateJobProgress(Long jobId, Integer doneItems, Integer totalItems) {
+        Job job = new Job();
+        job.setId(jobId);
+        job.setDoneItems(doneItems);
+        job.setProgress((int) Math.round((doneItems * 100.0) / totalItems));
+        jobMapper.updateById(job);
+        log.debug("Job进度更新 - jobId: {}, progress: {}%", jobId, job.getProgress());
+    }
+
+    private void updateJobSuccess(Long jobId, Integer successCount, Integer failCount) {
+        Job job = new Job();
+        job.setId(jobId);
+        job.setStatus("SUCCEEDED");
+        job.setDoneItems(successCount + failCount);
+        job.setProgress(100);
+        // 将结果摘要存储在metaJson中
+        String metaJson = String.format("{\"successCount\": %d, \"failCount\": %d}", successCount, failCount);
+        job.setMetaJson(metaJson);
+        jobMapper.updateById(job);
+        log.info("Job状态更新为SUCCEEDED - jobId: {}, 成功: {}, 失败: {}", jobId, successCount, failCount);
+    }
+
+    /**
+     * 更新Job状态为成功，并保存所有生成的图片URL
+     *
+     * @param jobId 任务ID
+     * @param successCount 成功数量
+     * @param failCount 失败数量
+     * @param allImageUrls 所有生成的图片URL列表
+     */
+    private void updateJobSuccessWithImages(Long jobId, Integer successCount, Integer failCount, List<String> allImageUrls) {
+        Job job = jobMapper.selectById(jobId);
+        if (job == null) {
+            log.error("任务不存在 - jobId: {}", jobId);
+            return;
+        }
+        
+        job.setStatus("SUCCEEDED");
+        job.setDoneItems(successCount + failCount);
+        job.setProgress(100);
+        
+        // 设置第一张图片为resultUrl
+        if (!allImageUrls.isEmpty()) {
+            job.setResultUrl(allImageUrls.get(0));
+        }
+        
+        // 将所有图片URL保存到metaJson
+        try {
+            Map<String, Object> metaData = new HashMap<>();
+            metaData.put("successCount", successCount);
+            metaData.put("failCount", failCount);
+            metaData.put("allImageUrls", allImageUrls);
+            metaData.put("imageCount", allImageUrls.size());
+            job.setMetaJson(objectMapper.writeValueAsString(metaData));
+        } catch (Exception e) {
+            log.error("序列化metaJson失败", e);
+            job.setMetaJson(String.format("{\"successCount\": %d, \"failCount\": %d, \"imageCount\": %d}", 
+                    successCount, failCount, allImageUrls.size()));
+        }
+        
+        jobMapper.updateById(job);
+        log.info("Job状态更新为SUCCEEDED(带图片) - jobId: {}, 成功: {}, 失败: {}, 总图片数: {}", 
+                jobId, successCount, failCount, allImageUrls.size());
+    }
+
+    private void updateJobFailed(Long jobId, String errorMessage) {
+        Job job = new Job();
+        job.setId(jobId);
+        job.setStatus("FAILED");
+        job.setErrorMessage(errorMessage);
+        jobMapper.updateById(job);
+        log.error("Job状态更新为FAILED - jobId: {}, error: {}", jobId, errorMessage);
+    }
+
+    // ==================== 图片处理辅助方法 ====================
+
+    /**
+     * 处理图片并上传到OSS
+     *
+     * @param imageData 图片数据（base64或URL）
+     * @param jobId 任务ID
+     * @param index 图片索引
+     * @return OSS存储的URL
+     */
+    private String processImageAndUploadToOss(String imageData, Long jobId, int index) {
+        if (isBase64(imageData)) {
+            log.debug("检测到base64图片 - index: {}", index);
+            return uploadBase64ToOss(imageData, jobId, index);
+        }
+
+        if (isUrl(imageData)) {
+            log.debug("检测到URL图片 - index: {}, url: {}", index, imageData);
+            return downloadAndUploadToOss(imageData, jobId, index);
+        }
+
+        throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.PARAM_INVALID, "无法识别的图片数据格式");
+    }
+
+    /**
+     * 上传base64图片到OSS
+     */
+    private String uploadBase64ToOss(String base64Data, Long jobId, int index) {
+        try {
+            byte[] imageBytes = Base64.getDecoder().decode(base64Data);
+            InputStream inputStream = new ByteArrayInputStream(imageBytes);
+            String fileName = String.format("ai_image_%d_%d.png", jobId, index);
+            String ossUrl = storageService.upload(inputStream, fileName, "image/png");
+            log.debug("Base64图片上传成功 - index: {}, ossUrl: {}", index, ossUrl);
+            return ossUrl;
+        } catch (Exception e) {
+            log.error("Base64图片上传失败", e);
+            throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.OSS_ERROR, "base64图片上传失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 下URL下载图片并上传到OSS
+     */
+    private String downloadAndUploadToOss(String imageUrl, Long jobId, int index) {
+        try {
+            URL url = new URL(imageUrl);
+            URLConnection connection = url.openConnection();
+            connection.setConnectTimeout(30000);
+            connection.setReadTimeout(60000);
+
+            String contentType = connection.getContentType();
+            if (contentType == null) {
+                contentType = "image/jpeg";
+            }
+
+            String extension = getExtensionFromContentType(contentType);
+            String fileName = String.format("ai_image_%d_%d%s", jobId, index, extension);
+
+            try (InputStream inputStream = connection.getInputStream()) {
+                String ossUrl = storageService.upload(inputStream, fileName, contentType);
+                log.debug("URL图片下载并上传成功 - ossUrl: {}", ossUrl);
+                return ossUrl;
+            }
+        } catch (Exception e) {
+            log.error("图片下载或上传失败 - url: {}", imageUrl, e);
+            throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.OSS_ERROR, "图片下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 判断是否为base64
+     */
+    private boolean isBase64(String data) {
+        if (data == null || data.isBlank()) {
+            return false;
+        }
+        return data.length() > 100
+                && !data.startsWith("http://")
+                && !data.startsWith("https://");
+    }
+
+    /**
+     * 判断是否为URL
+     */
+    private boolean isUrl(String data) {
+        if (data == null || data.isBlank()) {
+            return false;
+        }
+        return data.startsWith("http://") || data.startsWith("https://");
+    }
+
+    /**
+     * 根据ContentType获取文件扩展名
+     */
+    private String getExtensionFromContentType(String contentType) {
+        if (contentType == null) {
+            return ".jpg";
+        }
+        return switch (contentType.toLowerCase()) {
+            case "image/png" -> ".png";
+            case "image/jpeg", "image/jpg" -> ".jpg";
+            case "image/webp" -> ".webp";
+            case "image/gif" -> ".gif";
+            default -> ".jpg";
+        };
+    }
+}
