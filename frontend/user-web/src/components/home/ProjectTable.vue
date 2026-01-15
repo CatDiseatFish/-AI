@@ -19,6 +19,10 @@ const emit = defineEmits<{
 // Tab 切换: 'projects' | 'folders'
 const activeTab = ref<'projects' | 'folders'>('projects')
 
+// 当前选中的文件夹（用于筛选项目）
+const selectedFolderId = ref<number | null>(null)
+const selectedFolderName = ref<string>('')
+
 // 分页状态
 const currentPage = ref(1)
 const pageSize = 3
@@ -26,12 +30,39 @@ const pageSize = 3
 // 切换 Tab 时重置分页
 watch(activeTab, () => {
   currentPage.value = 1
+  // 切换到文件夹Tab时清除筛选
+  if (activeTab.value === 'folders') {
+    selectedFolderId.value = null
+    selectedFolderName.value = ''
+  }
 })
 
 // 获取当前列表数据
 const currentList = computed(() => {
-  return activeTab.value === 'projects' ? projectStore.projects : projectStore.folders
+  if (activeTab.value === 'projects') {
+    // 如果选中了文件夹，筛选该文件夹下的项目
+    if (selectedFolderId.value !== null) {
+      return projectStore.projects.filter(p => p.folderId === selectedFolderId.value)
+    }
+    return projectStore.projects
+  }
+  return projectStore.folders
 })
+
+// 点击文件夹进入
+const handleFolderClick = (folder: FolderVO) => {
+  selectedFolderId.value = folder.id
+  selectedFolderName.value = folder.name
+  activeTab.value = 'projects'
+  currentPage.value = 1
+}
+
+// 返回全部项目
+const clearFolderFilter = () => {
+  selectedFolderId.value = null
+  selectedFolderName.value = ''
+  currentPage.value = 1
+}
 
 // 分页后的数据
 const paginatedList = computed(() => {
@@ -51,6 +82,11 @@ const formatDate = (date: string) => {
     month: '2-digit',
     day: '2-digit',
   })
+}
+
+// 实时计算文件夹的项目数量
+const getFolderProjectCount = (folderId: number) => {
+  return projectStore.projects.filter(p => p.folderId === folderId).length
 }
 
 const handleEditProject = (project: ProjectVO) => {
@@ -83,7 +119,7 @@ const goToPage = (page: number) => {
             ? 'bg-[#8B5CF6] text-white'
             : 'text-text-secondary hover:bg-bg-hover'
         ]"
-        @click="activeTab = 'projects'"
+        @click="activeTab = 'projects'; clearFolderFilter()"
       >
         项目 ({{ projectStore.projects.length }})
       </button>
@@ -98,6 +134,20 @@ const goToPage = (page: number) => {
       >
         文件夹 ({{ projectStore.folders.length }})
       </button>
+      
+      <!-- 文件夹筛选提示 -->
+      <div v-if="selectedFolderId !== null" class="flex items-center gap-2 ml-4 text-sm">
+        <span class="text-text-tertiary">当前文件夹:</span>
+        <span class="text-[#8B5CF6] font-medium">{{ selectedFolderName }}</span>
+        <button 
+          class="text-text-tertiary hover:text-text-primary transition-colors"
+          @click="clearFolderFilter"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Table header -->
@@ -163,7 +213,8 @@ const goToPage = (page: number) => {
       <div
         v-for="folder in paginatedList as FolderVO[]"
         :key="folder.id"
-        class="grid grid-cols-12 gap-4 px-6 py-4 hover:bg-bg-hover transition-all"
+        class="grid grid-cols-12 gap-4 px-6 py-4 hover:bg-bg-hover transition-all cursor-pointer"
+        @click="handleFolderClick(folder)"
       >
         <div class="col-span-6 flex items-center gap-3">
           <div class="w-12 h-12 rounded bg-[#8B5CF6]/20 flex items-center justify-center flex-shrink-0">
@@ -173,15 +224,15 @@ const goToPage = (page: number) => {
           </div>
           <div class="min-w-0 flex-1">
             <p class="text-text-primary text-sm font-medium truncate">{{ folder.name }}</p>
-            <p class="text-text-tertiary text-xs">{{ folder.projectCount || 0 }} 个项目</p>
+            <p class="text-text-tertiary text-xs">{{ getFolderProjectCount(folder.id) }} 个项目</p>
           </div>
         </div>
         <div class="col-span-3 flex items-center">
           <span class="text-text-secondary text-sm">{{ formatDate(folder.createdAt) }}</span>
         </div>
         <div class="col-span-3 flex items-center justify-end gap-2">
-          <button class="btn btn-secondary text-xs" @click="$emit('editFolder', folder)">编辑</button>
-          <button class="p-2 rounded text-text-tertiary hover:bg-bg-hover hover:text-error transition-all" @click="$emit('deleteFolder', folder)">
+          <button class="btn btn-secondary text-xs" @click.stop="$emit('editFolder', folder)">编辑</button>
+          <button class="p-2 rounded text-text-tertiary hover:bg-bg-hover hover:text-error transition-all" @click.stop="$emit('deleteFolder', folder)">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>

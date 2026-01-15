@@ -261,16 +261,9 @@ const handleTypeChange = () => {
     </div>
 
     <!-- Generate Button -->
-    <div class="flex items-center justify-between pt-4 border-t border-border-default">
-      <div class="text-text-tertiary text-sm">
-        <span>消耗积分: </span>
-        <span class="text-text-primary font-medium">{{ estimatedCost }}</span>
-        <span class="mx-2">|</span>
-        <span>当前余额: </span>
-        <span class="text-text-primary">{{ userStore.points }}</span>
-      </div>
+    <div class="flex items-center justify-end pt-4 border-t border-border-default">
       <button
-        class="px-6 py-2 rounded bg-gray-900 text-text-primary font-medium text-sm hover:bg-gray-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+        class="px-6 py-2 rounded bg-bg-subtle border border-border-default text-text-primary font-medium text-sm hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         :disabled="loading || !formData.prompt.trim()"
         @click="handleGenerate"
       >

@@ -167,17 +167,10 @@ const handleKeydown = (e: KeyboardEvent) => {
         :options="durationOptions"
         @update:model-value="(v) => toolboxStore.currentInput.duration = Number(v)"
       />
-
-      <!-- Estimated Cost -->
-      <div class="flex items-center gap-1 px-3 py-1.5 rounded bg-bg-subtle border border-border-default text-text-primary text-xs whitespace-nowrap">
-        <span>预计:</span>
-        <span class="font-medium">{{ toolboxStore.estimatedCost }}</span>
-        <span>积分</span>
-      </div>
     </div>
 
     <!-- Input Area -->
-    <div class="flex items-end gap-2">
+    <div class="flex items-stretch gap-2">
       <!-- Debug info -->
       <div class="hidden">
         {{ console.log('[ChatInput RENDER] canSend:', canSend, 'isGenerating:', toolboxStore.isGenerating, 'prompt:', toolboxStore.currentInput.prompt.length) }}
@@ -236,15 +229,15 @@ const handleKeydown = (e: KeyboardEvent) => {
 
       <!-- Send Button -->
       <button
-        class="px-4 py-2 rounded font-medium text-xs transition-all flex items-center gap-1.5"
+        class="px-5 rounded font-medium text-sm transition-all flex items-center gap-1.5 bg-bg-subtle border border-border-default self-stretch"
         :class="canSend
-          ? 'bg-gray-900 text-text-primary hover:bg-gray-700'
-          : 'bg-bg-subtle text-white/30 cursor-not-allowed border border-border-default'"
+          ? 'text-text-primary hover:bg-bg-hover'
+          : 'text-white/30 cursor-not-allowed'"
         :disabled="!canSend"
         @click="handleSend"
       >
         <span>发送</span>
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
         </svg>
       </button>
