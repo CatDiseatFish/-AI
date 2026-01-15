@@ -163,7 +163,7 @@ const handleClose = () => {
           <p class="text-text-primary font-medium text-lg mb-2">{{ statusText }}</p>
           <p v-if="job" class="text-text-tertiary text-sm">
             <template v-if="job.totalItems > 0">
-              已完成 {{ job.completedItems }} / {{ job.totalItems }} 项
+              已完成 {{ job.doneItems }} / {{ job.totalItems }} 项
             </template>
             <template v-else>
               处理中...

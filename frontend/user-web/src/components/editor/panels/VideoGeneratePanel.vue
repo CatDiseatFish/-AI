@@ -422,13 +422,13 @@ onMounted(() => {
             <img :src="material.imageUrl" alt="备选素材" class="w-full h-full object-cover">
             
             <!-- 悬浮按钮 -->
-            <div class="absolute inset-0 bg-gray-800 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+            <div class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button 
                 @click.stop="handleDownloadVideo(material.imageUrl, '备选素材')"
-                class="p-2 bg-bg-subtle rounded hover:bg-bg-hover transition-colors"
+                class="p-1.5 bg-gray-900/80 rounded hover:bg-gray-800 transition-colors"
                 title="下载"
               >
-                <svg class="w-4 h-4 text-text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                 </svg>
               </button>
