@@ -1,0 +1,202 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { useEditorStore } from '@/stores/editor'
+import { usePanelManagerStore } from '@/stores/panelManager'
+import CharacterLibraryModal from './CharacterLibraryModal.vue'
+
+const editorStore = useEditorStore()
+
+// Search state
+const searchQuery = ref('')
+
+// Filter active characters (isActive === true)
+const activeCharacters = computed(() => {
+  return editorStore.characters.filter((c) => c.isActive)
+})
+
+// Filter available characters (isActive === false)
+const availableCharacters = computed(() => {
+  const chars = editorStore.characters.filter((c) => !c.isActive)
+
+  if (!searchQuery.value.trim()) {
+    return chars
+  }
+
+  const query = searchQuery.value.toLowerCase()
+  return chars.filter((c) => c.name.toLowerCase().includes(query))
+})
+
+// Show add character library modal
+const showLibraryModal = ref(false)
+
+const handleAddCharacter = () => {
+  showLibraryModal.value = true
+}
+
+const handleLibraryModalClose = () => {
+  showLibraryModal.value = false
+}
+
+const handleBatchGenerate = () => {
+  const activeCharIds = activeCharacters.value.map((c) => c.id)
+  if (activeCharIds.length === 0) {
+    window.$message?.warning('没有可生成的角色')
+    return
+  }
+  // TODO: Implement batch generation
+  console.log('[CharacterPanel] Batch generate:', activeCharIds)
+  window.$message?.info(`将为 ${activeCharIds.length} 个角色批量生成图片`)
+}
+
+const handleCharacterClick = (characterId: number) => {
+  const character = editorStore.characters.find(c => c.id === characterId)
+  if (!character) return
+  
+  // 跳转到编辑面板
+  const panelManagerStore = usePanelManagerStore()
+  panelManagerStore.openPanel('asset-edit', {
+    assetType: 'character',
+    assetId: character.id,
+    characterName: (character as any).displayName || character.name,
+    existingThumbnailUrl: character.thumbnailUrl,
+    existingDescription: (character as any).finalDescription || (character as any).description
+  })
+}
+</script>
+
+<template>
+  <div class="flex flex-col h-full">
+    <!-- Section: Active Characters -->
+    <div class="flex-grow overflow-y-auto pr-2">
+      <h3 class="text-sm font-bold mb-3 text-white">
+        作品中角色
+        <span class="text-white/40 font-normal ml-2">({{ activeCharacters.length }})</span>
+      </h3>
+
+      <div class="grid grid-cols-4 gap-2 mb-6">
+        <!-- Active Character Cards -->
+        <div
+          v-for="char in activeCharacters"
+          :key="char.id"
+          class="text-center group cursor-pointer relative rounded-lg"
+          @click="handleCharacterClick(char.id)"
+        >
+          <!-- Thumbnail -->
+          <img
+            v-if="char.thumbnailUrl"
+            :src="char.thumbnailUrl"
+            :alt="char.name"
+            class="w-full aspect-square rounded-lg object-cover mb-1 transition-transform duration-300 group-hover:scale-105"
+          >
+          <div
+            v-else
+            class="w-full aspect-square rounded-lg bg-black/20 flex items-center justify-center mb-1"
+          >
+            <svg class="w-6 h-6 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </div>
+
+          <!-- Active Indicator (Neon Cyan Dot) -->
+          <div
+            class="absolute top-1 right-1 w-2.5 h-2.5 bg-[#00FFCC] rounded-full border-2 border-[#1E2025] shadow-[0_0_6px_2px_rgba(0,255,204,0.7)]"
+          ></div>
+
+          <!-- Character Name -->
+          <p class="text-center text-xs truncate text-white/80">
+            {{ char.name }}
+          </p>
+        </div>
+
+        <!-- Empty State -->
+        <div
+          v-if="activeCharacters.length === 0"
+          class="col-span-4 text-center py-8 text-white/40 text-xs"
+        >
+          暂无启用的角色
+        </div>
+      </div>
+
+      <!-- Section: All Available Characters -->
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold text-white">
+          全部可用角色
+          <span class="text-white/40 font-normal ml-2">({{ availableCharacters.length }})</span>
+        </h3>
+
+        <!-- Search Input -->
+        <div class="relative">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜索角色..."
+            class="px-2 py-1 pr-6 text-xs bg-white/5 border border-white/10 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-[#00FFCC]/50 w-32"
+          >
+        </div>
+      </div>
+
+      <div class="grid grid-cols-4 gap-2">
+        <!-- Available Character Cards -->
+        <div
+          v-for="char in availableCharacters"
+          :key="char.id"
+          class="text-center group cursor-pointer relative rounded-lg"
+          @click="handleCharacterClick(char.id)"
+        >
+          <!-- Thumbnail -->
+          <img
+            v-if="char.thumbnailUrl"
+            :src="char.thumbnailUrl"
+            :alt="char.name"
+            class="w-full aspect-square rounded-lg object-cover mb-1 transition-transform duration-300 group-hover:scale-105"
+          >
+          <div
+            v-else
+            class="w-full aspect-square rounded-lg bg-black/20 flex items-center justify-center mb-1"
+          >
+            <svg class="w-6 h-6 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </div>
+
+          <!-- Character Name -->
+          <p class="text-center text-xs truncate text-white/80">
+            {{ char.name }}
+          </p>
+        </div>
+
+        <!-- Add Character Button ("+") -->
+        <div class="inline-block">
+          <button
+            class="w-full aspect-square rounded-lg border-2 border-dashed border-white/20 flex flex-col items-center justify-center text-white/40 hover:bg-white/5 hover:border-white/40 transition-colors"
+            @click="handleAddCharacter"
+          >
+            <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <span class="text-xs">创建</span>
+          </button>
+        </div>
+
+        <!-- Empty State -->
+        <div
+          v-if="availableCharacters.length === 0"
+          class="col-span-4 text-center py-8 text-white/40 text-xs"
+        >
+          {{ searchQuery ? '未找到匹配的角色' : '暂无可用角色' }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Character Library Modal -->
+    <CharacterLibraryModal
+      v-if="showLibraryModal && editorStore.projectId"
+      :project-id="editorStore.projectId"
+      @close="handleLibraryModalClose"
+      @added="handleLibraryModalClose"
+    />
+  </div>
+</template>

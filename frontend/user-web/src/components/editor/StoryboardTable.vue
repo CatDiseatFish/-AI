@@ -1,0 +1,506 @@
+<script setup lang="ts">
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { useEditorStore } from '@/stores/editor'
+import StoryboardRow from './StoryboardRow.vue'
+
+const editorStore = useEditorStore()
+
+// Polling for GENERATING status
+let pollingTimer: number | null = null
+
+const hasGeneratingAssets = computed(() => {
+  return editorStore.shots.some(shot =>
+    shot.shotImage.status === 'GENERATING' || shot.video.status === 'GENERATING'
+  )
+})
+
+const startPolling = () => {
+  if (pollingTimer) return
+
+  pollingTimer = window.setInterval(() => {
+    if (hasGeneratingAssets.value) {
+      console.log('[StoryboardTable] Polling shots (有生成中的资产)...')
+      editorStore.fetchShots()
+    } else {
+      stopPolling()
+    }
+  }, 3000) // Poll every 3 seconds
+}
+
+const stopPolling = () => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+// Toggle select all
+const handleToggleSelectAll = () => {
+  if (editorStore.allSelected) {
+    editorStore.deselectAll()
+  } else {
+    editorStore.selectAll()
+  }
+}
+
+// Toggle single shot selection
+const handleToggleShotSelection = (shotId: number) => {
+  editorStore.toggleShotSelection(shotId)
+}
+
+// Update shot script
+const handleUpdateScript = async (shotId: number, scriptText: string) => {
+  await editorStore.updateShot(shotId, scriptText)
+}
+
+// Merge with previous shot (merge up)
+const handleMergeUp = async (shotId: number) => {
+  const shots = editorStore.shots
+  const currentIndex = shots.findIndex(s => s.id === shotId)
+  if (currentIndex <= 0) return
+  
+  const prevShot = shots[currentIndex - 1]
+  const currentShot = shots[currentIndex]
+  
+  // 首次提醒，之后直接合并
+  const mergeConfirmed = localStorage.getItem('merge_confirmed')
+  if (!mergeConfirmed) {
+    if (!confirm(`确定将当前分镜合并到上一条吗？\n合并后当前分镜将被删除。\n\n（之后将不再提醒）`)) {
+      return
+    }
+    localStorage.setItem('merge_confirmed', 'true')
+  }
+  
+  await editorStore.mergeShots([prevShot.id, currentShot.id])
+}
+
+// Merge with next shot (merge down)
+const handleMergeDown = async (shotId: number) => {
+  const shots = editorStore.shots
+  const currentIndex = shots.findIndex(s => s.id === shotId)
+  if (currentIndex < 0 || currentIndex >= shots.length - 1) return
+  
+  const currentShot = shots[currentIndex]
+  const nextShot = shots[currentIndex + 1]
+  
+  // 首次提醒，之后直接合并
+  const mergeConfirmed = localStorage.getItem('merge_confirmed')
+  if (!mergeConfirmed) {
+    if (!confirm(`确定将下一条分镜合并到当前分镜吗？\n合并后下一条分镜将被删除。\n\n（之后将不再提醒）`)) {
+      return
+    }
+    localStorage.setItem('merge_confirmed', 'true')
+  }
+  
+  await editorStore.mergeShots([currentShot.id, nextShot.id])
+}
+
+// Delete shot
+const handleDeleteShot = async (shotId: number) => {
+  if (confirm('确定删除这条分镜吗？')) {
+    await editorStore.deleteShot(shotId)
+  }
+}
+
+// Delete selected shots
+const handleDeleteSelected = async () => {
+  const count = editorStore.selectedShotIds.size
+  if (confirm(`确定删除选中的 ${count} 条分镜吗？`)) {
+    const shotIds = Array.from(editorStore.selectedShotIds)
+    for (const shotId of shotIds) {
+      await editorStore.deleteShot(shotId)
+    }
+    editorStore.deselectAll()
+  }
+}
+
+// Merge selected shots
+const handleMergeSelected = async () => {
+  const count = editorStore.selectedShotIds.size
+  if (count < 2) {
+    alert('请至少选择两条分镜进行合并')
+    return
+  }
+  if (confirm(`确定将选中的 ${count} 条分镜合并为一条吗？\n合并后将保留第一条分镜，其他分镜的内容将追加到文本末尾。`)) {
+    await editorStore.mergeShots(Array.from(editorStore.selectedShotIds))
+  }
+}
+
+// Batch generate shots
+const handleBatchGenerateShots = async () => {
+  const count = editorStore.selectedShotIds.size
+  if (!confirm(`确定为选中的 ${count} 条分镜批量生成分镜图吗？这将消耗 ${count * 50} 积分。`)) {
+    return
+  }
+
+  try {
+    await editorStore.batchGenerateShots({
+      targetIds: Array.from(editorStore.selectedShotIds),
+      mode: 'MISSING', // Only generate for shots without images
+      countPerItem: 1,
+      aspectRatio: '21:9', // Default aspect ratio for shots
+    })
+    editorStore.deselectAll()
+  } catch (error) {
+    console.error('[StoryboardTable] Batch generate shots failed:', error)
+  }
+}
+
+// Batch generate videos
+const handleBatchGenerateVideos = async () => {
+  const count = editorStore.selectedShotIds.size
+  if (!confirm(`确定为选中的 ${count} 条分镜批量生成视频吗？这将消耗 ${count * 100} 积分。`)) {
+    return
+  }
+
+  try {
+    await editorStore.batchGenerateVideos({
+      targetIds: Array.from(editorStore.selectedShotIds),
+      mode: 'MISSING', // Only generate for shots without videos
+      countPerItem: 1,
+      aspectRatio: '16:9', // Default aspect ratio for videos
+    })
+    editorStore.deselectAll()
+  } catch (error) {
+    console.error('[StoryboardTable] Batch generate videos failed:', error)
+  }
+}
+
+// Add new shot
+const showAddModal = ref(false)
+const newShotScript = ref('')
+
+// AI parse script
+const showParseModal = ref(false)
+const fullScript = ref('')
+const isParsing = ref(false)
+
+const handleAddShot = async () => {
+  if (!newShotScript.value.trim()) {
+    alert('请输入剧本内容')
+    return
+  }
+
+  await editorStore.createShot(newShotScript.value.trim())
+  newShotScript.value = ''
+  showAddModal.value = false
+}
+
+// Handle AI parse script
+const handleParseScript = async () => {
+  if (!fullScript.value.trim()) {
+    alert('请输入剧本内容')
+    return
+  }
+
+  isParsing.value = true
+  let success = false
+  
+  try {
+    console.log('[StoryboardTable] Starting AI parse...')
+    await editorStore.parseAndCreateShots(fullScript.value.trim())
+    console.log('[StoryboardTable] AI parse completed successfully')
+    success = true
+  } catch (error: any) {
+    console.error('[StoryboardTable] Parse script failed:', error)
+    alert(error.message || 'AI解析失败，请重试')
+  } finally {
+    isParsing.value = false
+    
+    // 成功后关闭模态框并重置
+    if (success) {
+      fullScript.value = ''
+      showParseModal.value = false
+    }
+  }
+}
+
+// Lifecycle
+onMounted(() => {
+  if (hasGeneratingAssets.value) {
+    startPolling()
+  }
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
+})
+
+// Watch for generating status changes
+computed(() => {
+  if (hasGeneratingAssets.value && !pollingTimer) {
+    startPolling()
+  } else if (!hasGeneratingAssets.value && pollingTimer) {
+    stopPolling()
+  }
+  return hasGeneratingAssets.value
+})
+</script>
+
+<template>
+  <div class="flex flex-col h-full">
+    <!-- Toolbar -->
+    <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
+      <div class="flex items-center gap-3">
+        <h3 class="text-white text-base font-semibold">
+          分镜表
+          <span class="text-white/40 text-sm ml-2">({{ editorStore.shots.length }} 条)</span>
+        </h3>
+
+        <!-- Batch Actions (shown when selection exists) -->
+        <div v-if="editorStore.hasSelection" class="flex items-center gap-2">
+          <span class="text-white/60 text-sm">
+            已选中 {{ editorStore.selectedShotIds.size }} 条
+          </span>
+          <button
+            class="px-3 py-1 bg-purple-500/20 text-purple-400 text-sm rounded-full hover:bg-purple-500/30 transition-colors flex items-center gap-1.5"
+            @click="handleBatchGenerateShots"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+              <path d="m12 3-1.9 5.8-5.8 1.9 5.8 1.9L12 21l1.9-5.8 5.8-1.9-5.8-1.9L12 3z"></path>
+            </svg>
+            批量生成分镜图
+          </button>
+          <button
+            class="px-3 py-1 bg-blue-500/20 text-blue-400 text-sm rounded-full hover:bg-blue-500/30 transition-colors flex items-center gap-1.5"
+            @click="handleBatchGenerateVideos"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z"></path>
+            </svg>
+            批量生成视频
+          </button>
+          <button
+            class="px-3 py-1 bg-red-500/20 text-red-400 text-sm rounded-full hover:bg-red-500/30 transition-colors"
+            @click="handleDeleteSelected"
+          >
+            删除选中
+          </button>
+          <button
+            v-if="editorStore.selectedShotIds.size >= 2"
+            class="px-3 py-1 bg-amber-500/20 text-amber-400 text-sm rounded-full hover:bg-amber-500/30 transition-colors flex items-center gap-1.5"
+            @click="handleMergeSelected"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
+            </svg>
+            合并选中
+          </button>
+          <button
+            class="px-3 py-1 bg-white/10 text-white/60 text-sm rounded-full hover:bg-white/20 transition-colors"
+            @click="editorStore.deselectAll"
+          >
+            取消选择
+          </button>
+        </div>
+      </div>
+
+      <!-- Add Button Group -->
+      <div class="flex items-center gap-2">
+        <!-- AI Parse Script Button -->
+        <button
+          class="flex items-center gap-2 px-4 py-2 bg-purple-500/20 text-purple-400 font-medium text-sm rounded-2xl hover:bg-purple-500/30 transition-colors"
+          @click="showParseModal = true"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+          </svg>
+          AI解析剧本
+        </button>
+        
+        <!-- Add Shot Button -->
+        <button
+          class="flex items-center gap-2 px-4 py-2 bg-[#00FFCC] text-black font-semibold text-sm rounded-2xl hover:bg-[#21FFF3] transition-colors"
+          @click="showAddModal = true"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+          </svg>
+          添加分镜
+        </button>
+      </div>
+    </div>
+
+    <!-- Table Container -->
+    <div class="flex-1 overflow-auto">
+      <!-- Empty State -->
+      <div
+        v-if="editorStore.shots.length === 0 && !editorStore.loading"
+        class="flex flex-col items-center justify-center h-full"
+      >
+        <svg class="w-20 h-20 text-white/20 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"></path>
+        </svg>
+        <p class="text-white/40 text-sm mb-2">暂无分镜</p>
+        <p class="text-white/20 text-xs mb-4">点击上方"添加分镜"按钮开始创作</p>
+        <button
+          class="px-4 py-2 bg-[#00FFCC] text-black font-semibold text-sm rounded-2xl hover:bg-[#21FFF3] transition-colors"
+          @click="showAddModal = true"
+        >
+          添加第一条分镜
+        </button>
+      </div>
+
+      <!-- Loading State -->
+      <div
+        v-else-if="editorStore.loading"
+        class="flex items-center justify-center h-full"
+      >
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-[#00FFCC]"></div>
+      </div>
+
+      <!-- Table -->
+      <table v-else class="w-full">
+        <!-- Table Header -->
+        <thead class="sticky top-0 bg-[#1A1B1E] border-b border-white/10 z-10">
+          <tr>
+            <th class="px-3 py-3 text-left w-[48px]">
+              <input
+                type="checkbox"
+                :checked="editorStore.allSelected"
+                :indeterminate="editorStore.hasSelection && !editorStore.allSelected"
+                @change="handleToggleSelectAll"
+                class="w-4 h-4 rounded bg-white/10 border-white/20 text-[#00FFCC] focus:ring-2 focus:ring-[#00FFCC]/50 cursor-pointer"
+              >
+            </th>
+            <th class="px-3 py-3 text-left w-[80px] text-white/60 text-xs font-semibold uppercase">
+              ID
+            </th>
+            <th class="px-3 py-3 text-left flex-1 min-w-[200px] text-white/60 text-xs font-semibold uppercase">
+              剧本
+            </th>
+            <th class="px-3 py-3 text-left w-[180px] text-white/60 text-xs font-semibold uppercase">
+              角色画像
+            </th>
+            <th class="px-3 py-3 text-left w-[140px] text-white/60 text-xs font-semibold uppercase">
+              场景画像
+            </th>
+            <th class="px-3 py-3 text-left w-[140px] text-white/60 text-xs font-semibold uppercase">
+              道具画像
+            </th>
+            <th class="w-0 hidden"></th>
+            <th class="px-3 py-3 text-left w-[120px] text-white/60 text-xs font-semibold uppercase">
+              分镜图
+            </th>
+            <th class="px-3 py-3 text-left w-[120px] text-white/60 text-xs font-semibold uppercase">
+              视频
+            </th>
+            <th class="px-3 py-3 text-left w-[140px] text-white/60 text-xs font-semibold uppercase">
+              操作
+            </th>
+          </tr>
+        </thead>
+
+        <!-- Table Body -->
+        <tbody>
+          <StoryboardRow
+            v-for="(shot, index) in editorStore.shots"
+            :key="shot.id"
+            :shot="shot"
+            :selected="editorStore.selectedShotIds.has(shot.id)"
+            :is-first="index === 0"
+            :is-last="index === editorStore.shots.length - 1"
+            :on-toggle-select="() => handleToggleShotSelection(shot.id)"
+            :on-update-script="(text) => handleUpdateScript(shot.id, text)"
+            :on-merge-up="() => handleMergeUp(shot.id)"
+            :on-merge-down="() => handleMergeDown(shot.id)"
+            :on-delete="() => handleDeleteShot(shot.id)"
+          />
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Add Shot Modal -->
+    <Transition
+      enter-active-class="transition-opacity duration-200"
+      leave-active-class="transition-opacity duration-200"
+      enter-from-class="opacity-0"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="showAddModal"
+        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+        @click.self="showAddModal = false"
+      >
+        <div class="bg-[#1E2025] w-[600px] rounded-2xl p-6 shadow-2xl">
+          <h3 class="text-white text-lg font-semibold mb-4">添加新分镜</h3>
+
+          <textarea
+            v-model="newShotScript"
+            placeholder="输入剧本内容..."
+            class="w-full h-32 px-4 py-3 bg-[#0D0E12] border border-white/10 rounded-2xl text-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#00FFCC]/50 placeholder-white/30"
+            autofocus
+          ></textarea>
+
+          <div class="flex items-center justify-end gap-3 mt-4">
+            <button
+              class="px-4 py-2 bg-white/10 text-white/60 text-sm rounded-2xl hover:bg-white/20 transition-colors"
+              @click="showAddModal = false; newShotScript = ''"
+            >
+              取消
+            </button>
+            <button
+              class="px-4 py-2 bg-[#00FFCC] text-black font-semibold text-sm rounded-2xl hover:bg-[#21FFF3] transition-colors"
+              @click="handleAddShot"
+            >
+              添加
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- AI Parse Script Modal -->
+    <Transition
+      enter-active-class="transition-opacity duration-200"
+      leave-active-class="transition-opacity duration-200"
+      enter-from-class="opacity-0"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="showParseModal"
+        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+        @click.self="showParseModal = false; fullScript = ''"
+      >
+        <div class="bg-[#1E2025] w-[700px] rounded-2xl p-6 shadow-2xl">
+          <h3 class="text-white text-lg font-semibold mb-2">AI解析剧本</h3>
+          <p class="text-white/60 text-sm mb-4">粘贴完整剧本，AI将自动提取角色、场景并拆分成多条分镜</p>
+
+          <textarea
+            v-model="fullScript"
+            placeholder="粘贴你的完整剧本或文案..."
+            class="w-full h-64 px-4 py-3 bg-[#0D0E12] border border-white/10 rounded-2xl text-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-500/50 placeholder-white/30"
+            :disabled="isParsing"
+          ></textarea>
+
+          <div class="flex items-center justify-between mt-4">
+            <span class="text-white/40 text-xs">提示：AI将自动提取角色形象、场景描述，并拆分成专业剧本格式</span>
+            <div class="flex items-center gap-3">
+              <button
+                class="px-4 py-2 bg-white/10 text-white/60 text-sm rounded-2xl hover:bg-white/20 transition-colors"
+                @click="showParseModal = false; fullScript = ''"
+                :disabled="isParsing"
+              >
+                取消
+              </button>
+              <button
+                class="px-4 py-2 bg-purple-500 text-white font-semibold text-sm rounded-2xl hover:bg-purple-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="handleParseScript"
+                :disabled="isParsing || !fullScript.trim()"
+              >
+                <svg v-if="isParsing" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                </svg>
+                {{ isParsing ? '解析中...' : '开始解析' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </div>
+</template>
