@@ -23,6 +23,7 @@ const emit = defineEmits<{
 const currentShot = computed<StoryboardShotVO | undefined>(() => {
   return editorStore.shots.find(s => s.id === props.shotId)
 })
+const hasShotScript = computed(() => !!currentShot.value?.scriptText?.trim())
 
 // 数量选择
 const quantity = ref(1)
@@ -36,7 +37,7 @@ const aspectRatioOptions = [
   { label: '9:16', value: '9:16' },
 ]
 
-// 用户输入的剧本描述
+// 用户输入的剧本描述（暂未开放）
 const scriptDescription = ref('')
 
 // AI参考图（用户手动上传）
@@ -213,11 +214,6 @@ const mergeAssetImages = async (): Promise<string | null> => {
 
 // AI生成
 const handleAIGenerate = async () => {
-  if (!scriptDescription.value.trim()) {
-    window.$message?.warning('请输入自定义内容')
-    return
-  }
-  
   if (!editorStore.projectId) {
     window.$message?.error('项目ID不存在')
     return
@@ -230,13 +226,12 @@ const handleAIGenerate = async () => {
     const mergedImageUrl = await mergeAssetImages()
     console.log('[ShotImageGeneratePanel] 参考图拼接结果:', mergedImageUrl)
     
-    // 2. 构建完整的提示词：内嵌规则（漫画分镜师角色设定） + 用户自定义内容
-    const fixedTemplate = '你是一个漫画分镜师，擅长在同一画布下，画多镜头的黑白漫画分镜图，要求布局合理，分镜图禁止出现场景、背景和文字，主要以人物和道具为主，排版格式为横向排版，接下来我会给你剧本：'
-    
-    // 拼接：系统规则 + 用户自定义内容
-    const customPrompt = scriptDescription.value.trim() 
-      ? fixedTemplate + scriptDescription.value.trim()
-      : fixedTemplate + '（无剧本内容）'
+    // 2. 默认仅使用分镜剧本作为提示词
+    const customPrompt = currentShot.value?.scriptText?.trim() || ''
+    if (!customPrompt) {
+      window.$message?.warning('分镜剧本为空，暂无法生成分镜图')
+      return
+    }
     
     console.log('[ShotImageGeneratePanel] 生成参数:', {
       shotId: props.shotId,
@@ -279,8 +274,8 @@ const handleAIGenerate = async () => {
           imageUrl: finalJob.resultUrl,
           timestamp: new Date().toLocaleString('zh-CN'),
           isSelected: false,
-          prompt: customPrompt, // 完整的prompt（包含内嵌规则）
-          userInput: scriptDescription.value, // 只保存用户的原始输入
+          prompt: customPrompt,
+          userInput: '',
           expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7天后过期
         }
         
@@ -594,7 +589,8 @@ onMounted(() => {
         <!-- 剧本描述输入 -->
         <textarea
           v-model="scriptDescription"
-          placeholder="输入自定义内容（必填）"
+          placeholder="提示词模块暂未开发"
+          disabled
           class="flex-1 h-[120px] px-4 py-3 bg-bg-subtle border border-border-default rounded text-text-primary placeholder-text-tertiary focus:outline-none focus:border-gray-900/50 resize-none text-sm"
         ></textarea>
       </div>
@@ -635,10 +631,10 @@ onMounted(() => {
         <!-- AI生成按钮 -->
         <button
           @click="handleAIGenerate"
-          :disabled="isGenerating || !scriptDescription.trim()"
+          :disabled="isGenerating || !hasShotScript"
           :class="[
             'px-10 py-3 rounded font-semibold text-sm transition-opacity flex items-center gap-2',
-            isGenerating || !scriptDescription.trim()
+            isGenerating || !hasShotScript
               ? 'bg-gray-500 cursor-not-allowed opacity-60'
               : 'bg-gray-800 text-white hover:opacity-90'
           ]"

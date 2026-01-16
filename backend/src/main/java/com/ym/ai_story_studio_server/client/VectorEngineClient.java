@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.util.LinkedMultiValueMap;
@@ -810,6 +811,32 @@ public class VectorEngineClient {
         }
     }
 
+    public VideoContentResponse downloadVideoContent(String taskId) {
+        try {
+            ResponseEntity<byte[]> response = restClient.get()
+                    .uri("/v1/videos/{id}/content", taskId)
+                    .retrieve()
+                    .toEntity(byte[].class);
+
+            byte[] body = response.getBody();
+            if (body == null || body.length == 0) {
+                throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "视频内容为空");
+            }
+
+            String contentType = null;
+            if (response.getHeaders() != null && response.getHeaders().getContentType() != null) {
+                contentType = response.getHeaders().getContentType().toString();
+            }
+
+            return new VideoContentResponse(body, contentType);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("下载视频内容失败 - taskId: {}", taskId, e);
+            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "下载视频内容失败: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * 文本生成API响应
      *
@@ -856,6 +883,11 @@ public class VectorEngineClient {
             String model,
             @com.fasterxml.jackson.annotation.JsonProperty("status_update_time")
             Long statusUpdateTime
+    ) {}
+
+    public record VideoContentResponse(
+            byte[] content,
+            String contentType
     ) {}
 
     /**

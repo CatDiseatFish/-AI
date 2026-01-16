@@ -6,6 +6,7 @@
 //   Principle_Applied: "SRP单一职责原则, Spring @Async最佳实践, 线程安全(UserContext手动传递), 幂等性保证"
 // }}
 // {{START_MODIFICATIONS}}
+
 package com.ym.ai_story_studio_server.service;
 
 import com.ym.ai_story_studio_server.client.VectorEngineClient;
@@ -173,24 +174,24 @@ public class AsyncVideoTaskService {
                     break;
                 }
 
+                // 检查任务是否完成
+                if ("completed".equalsIgnoreCase(status)) {
+                    // ? 任务成功:处理视频下载、上传OSS、积分扣费 (修复: 传入 aspectRatio)
+                    handleVideoGenerationSuccess(jobId, statusResponse, model, aspectRatio, duration, userId, apiTaskId);
+                    break;
+
+                } else if ("error".equalsIgnoreCase(status) || "failed".equalsIgnoreCase(status)) {
+                    // ? 任务失败:记录错误信息
+                    String errorMsg = "视频生成失败(status: " + status + ")";
+                    handleVideoGenerationFailure(jobId, errorMsg);
+                    break;
+                }
+
                 // 更新任务进度和状态
                 updateJobProgress(job, status, progress);
 
                 log.info("任务进度已更新 - jobId: {}, status: {}, progress: {}%",
                         jobId, status, progress);
-
-                // 检查任务是否完成
-                if ("completed".equalsIgnoreCase(status)) {
-                    // ✅ 任务成功:处理视频下载、上传OSS、积分扣费 (修复: 传入 aspectRatio)
-                    handleVideoGenerationSuccess(jobId, statusResponse, model, aspectRatio, duration, userId);
-                    break;
-
-                } else if ("error".equalsIgnoreCase(status) || "failed".equalsIgnoreCase(status)) {
-                    // ✅ 任务失败:记录错误信息
-                    String errorMsg = "视频生成失败(status: " + status + ")";
-                    handleVideoGenerationFailure(jobId, errorMsg);
-                    break;
-                }
 
                 // 继续轮询...
             }
@@ -311,18 +312,25 @@ public class AsyncVideoTaskService {
             String model,
             String aspectRatio,
             Integer duration,
-            Long userId
+            Long userId,
+            String apiTaskId
     ) {
         log.info("========== 视频生成成功处理开始 ==========");
         log.info("jobId: {}, userId: {}", jobId, userId);
 
         try {
-            // 1. 获取视频URL (✅ 修复: videoUrl是顶层字段,不在result中)
+            // 1. 获取视频URL (可能为空)
             String tempVideoUrl = statusResponse.videoUrl();
             log.debug("API返回的视频URL: {}", tempVideoUrl);
 
-            // 2. 下载视频并上传到OSS
-            String ossVideoUrl = downloadAndUploadToOss(tempVideoUrl, jobId);
+            String ossVideoUrl;
+            if (tempVideoUrl == null || tempVideoUrl.isBlank()) {
+                VectorEngineClient.VideoContentResponse contentResponse = vectorEngineClient.downloadVideoContent(apiTaskId);
+                ossVideoUrl = uploadVideoBytesToOss(contentResponse, jobId);
+            } else {
+                // 2. 下载视频并上传到OSS
+                ossVideoUrl = downloadAndUploadToOss(tempVideoUrl, jobId);
+            }
             log.info("视频已上传到OSS - jobId: {}, ossUrl: {}", jobId, ossVideoUrl);
 
             // 3. 进行积分计费(需要手动设置UserContext,因为这是异步线程)
@@ -449,6 +457,32 @@ public class AsyncVideoTaskService {
                     com.ym.ai_story_studio_server.common.ResultCode.OSS_ERROR,
                     "视频下载或上传失败: " + e.getMessage(), e
             );
+        }
+    }
+
+    private String uploadVideoBytesToOss(VectorEngineClient.VideoContentResponse contentResponse, Long jobId) {
+        try {
+            byte[] content = contentResponse.content();
+            if (content == null || content.length == 0) {
+                throw new BusinessException(ResultCode.OSS_ERROR, "视频内容为空");
+            }
+
+            String contentType = contentResponse.contentType();
+            if (contentType == null || contentType.isBlank()) {
+                contentType = "video/mp4";
+            }
+
+            String extension = getExtensionFromContentType(contentType);
+            String fileName = String.format("ai_video_%d%s", jobId, extension);
+
+            try (java.io.InputStream inputStream = new java.io.ByteArrayInputStream(content)) {
+                String ossUrl = storageService.upload(inputStream, fileName, contentType);
+                log.debug("视频上传OSS成功 - ossUrl: {}", ossUrl);
+                return ossUrl;
+            }
+        } catch (Exception e) {
+            log.error("视频上传失败 - jobId: {}", jobId, e);
+            throw new BusinessException(ResultCode.OSS_ERROR, "视频下载或上传失败: " + e.getMessage(), e);
         }
     }
 

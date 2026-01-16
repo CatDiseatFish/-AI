@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useEditorStore } from '@/stores/editor'
 import api from '@/api'
 import { uploadApi } from '@/api/apis'
+import axios from 'axios'
 import * as generationApi from '@/api/generation'
 import { jobApi, pollJobStatus } from '@/api/job'
 
@@ -24,7 +25,7 @@ const currentShot = computed(() => {
   return editorStore.shots.find(s => s.id === props.shotId)
 })
 
-// 用户自定义内容输入
+// 用户自定义提示词（暂未开放）
 const scriptDescription = ref('')
 
 // 比例选择
@@ -66,6 +67,7 @@ interface VideoHistoryItem {
 
 const generationHistory = ref<VideoHistoryItem[]>([])
 const loadingHistory = ref(false)
+const mockVideoUrl = 'https://yuanmeng-logo.oss-cn-hangzhou.aliyuncs.com/2026/01/16/2051510e-718d-4c59-81bb-a1f6828babd1_ai_video_105.mp4'
 
 const handleReferenceImageUpload = async (event: Event) => {
   const target = event.target as HTMLInputElement
@@ -162,10 +164,26 @@ const saveHistory = () => {
   console.log('[VideoGeneratePanel] 历史记录已保存')
 }
 
+const getFallbackThumbnailUrl = () => {
+  if (currentShot.value?.shotImage?.currentUrl) return currentShot.value.shotImage.currentUrl
+  if (videoReferenceUrl.value) return videoReferenceUrl.value
+  if (currentShot.value?.scene?.thumbnailUrl) return currentShot.value.scene.thumbnailUrl
+  if (currentShot.value?.characters?.length) {
+    const firstChar = currentShot.value.characters.find(char => char.thumbnailUrl)
+    if (firstChar?.thumbnailUrl) return firstChar.thumbnailUrl
+  }
+  if (currentShot.value?.props?.length) {
+    const firstProp = currentShot.value.props.find(prop => prop.thumbnailUrl)
+    if (firstProp?.thumbnailUrl) return firstProp.thumbnailUrl
+  }
+  return 'https://via.placeholder.com/400x225'
+}
+
 const updateHistoryVideoUrl = (jobId: number, resultUrl: string) => {
   const index = generationHistory.value.findIndex(item => item.id === jobId)
   if (index === -1) return
   generationHistory.value[index].videoUrl = resultUrl
+  generationHistory.value[index].thumbnailUrl = getFallbackThumbnailUrl()
   saveHistory()
 }
 
@@ -222,13 +240,9 @@ const loadHistory = () => {
   hydrateHistoryVideoUrls()
 }
 
+
 // AI生成视频
 const handleAIGenerate = async () => {
-  if (!scriptDescription.value.trim()) {
-    window.$message?.warning('请输入自定义内容')
-    return
-  }
-  
   if (!editorStore.projectId) {
     window.$message?.error('项目ID不存在')
     return
@@ -245,10 +259,12 @@ const handleAIGenerate = async () => {
       return
     }
     
-    // 2. 构建完整的提示词：内嵌规则 + 分镜剧本 + 用户自定义内容
-    const fixedTemplate = '根据参考图的设定，使用参考图中的角色、场景、道具，运用合理的构建分镜，合理的动作，合理的运镜，合理的环境渲染，发散你的想象力，生成保持风格一致性的2D动漫视频，要求不要字幕和BGM，没有台词时禁止说话，线条细致，人物画风保持与参考图一致，清晰不模糊，颜色鲜艳，光影效果，超清画质，电影级镜头（cinematicdvnamiccamera）,音质清晰无杂质，第一个镜头0.3秒空境，请忠实原文，不增加原文没有的内容，不减少原文包含的信息，分镜要求如下：'
-    
-    const customPrompt = fixedTemplate + resources.script + ' ' + scriptDescription.value.trim()
+    // 2. 默认仅使用分镜剧本作为提示词
+    const customPrompt = resources.script?.trim() || ''
+    if (!customPrompt) {
+      window.$message?.warning('分镜剧本为空，暂无法生成视频')
+      return
+    }
     
     console.log('[VideoGeneratePanel] 生成参数:', {
       shotId: props.shotId,
@@ -292,7 +308,7 @@ const handleAIGenerate = async () => {
       thumbnailUrl: mockThumbnailUrl,
       timestamp: new Date().toLocaleString('zh-CN'),
       prompt: customPrompt,
-      userInput: scriptDescription.value,
+      userInput: '',
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7天后过期
     }
     
@@ -317,6 +333,25 @@ const handleAIGenerate = async () => {
   } finally {
     isGenerating.value = false
   }
+}
+
+const handleMockVideoResult = () => {
+  const mockThumbnailUrl = getFallbackThumbnailUrl()
+
+  const newHistoryItem: VideoHistoryItem = {
+    id: Date.now(),
+    videoUrl: mockVideoUrl,
+    thumbnailUrl: mockThumbnailUrl,
+    timestamp: new Date().toLocaleString('zh-CN'),
+    prompt: '[mock]',
+    userInput: scriptDescription.value,
+    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  }
+
+  generationHistory.value.unshift(newHistoryItem)
+  generatedVideoThumbnail.value = mockThumbnailUrl
+  saveHistory()
+  window.$message?.success('Mock video ready')
 }
 
 // 选择备选素材（切换待生成缩略图）
@@ -350,15 +385,16 @@ const handleDownloadVideo = async (videoUrl: string, fileName: string = '视频'
     return
   }
   try {
-    const response = await fetch('/api/assets/download-from-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: videoUrl })
-    })
-    if (!response.ok) {
-      throw new Error(`Download failed: ${response.status}`)
-    }
-    const blob = await response.blob()
+    const token = localStorage.getItem('token')
+    const response = await axios.post(
+      '/api/assets/download-from-url',
+      { url: videoUrl },
+      {
+        responseType: 'blob',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }
+    )
+    const blob = response.data
     const downloadUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = downloadUrl
@@ -438,7 +474,8 @@ onMounted(() => {
       <div class="mb-6">
         <textarea
           v-model="scriptDescription"
-          placeholder="请输入自定义内容（将添加到内嵌规则和分镜剧本之后）"
+          placeholder="提示词模块暂未开发"
+          disabled
           class="w-full h-24 px-4 py-3 bg-bg-hover border border-border-default rounded text-text-primary text-sm placeholder-text-tertiary resize-none focus:outline-none focus:border-gray-900/50"
         ></textarea>
       </div>
@@ -456,13 +493,21 @@ onMounted(() => {
         </select>
 
         <!-- AI生成按钮 -->
-        <button
-          @click="handleAIGenerate"
-          :disabled="isGenerating"
-          class="px-10 py-3 bg-bg-subtle rounded text-text-secondary font-medium text-sm hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {{ isGenerating ? '生成中...' : 'AI生成' }}
-        </button>
+        <div class="flex items-center gap-2">
+          <button
+            @click="handleMockVideoResult"
+            class="px-4 py-3 bg-bg-subtle rounded text-text-secondary font-medium text-sm hover:bg-bg-hover transition-colors"
+          >
+            Mock Result
+          </button>
+          <button
+            @click="handleAIGenerate"
+            :disabled="isGenerating"
+            class="px-10 py-3 bg-bg-subtle rounded text-text-secondary font-medium text-sm hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ isGenerating ? '生成中...' : 'AI生成' }}
+          </button>
+        </div>
       </div>
 
       <!-- 待生成区域 -->
