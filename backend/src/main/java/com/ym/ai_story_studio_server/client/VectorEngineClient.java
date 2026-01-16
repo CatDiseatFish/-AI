@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.util.LinkedMultiValueMap;
@@ -654,6 +655,7 @@ public class VectorEngineClient {
      * @param model 模型名称(如: sora-2)
      * @param aspectRatio 画幅比例(如: 16:9, 9:16, 1:1)
      * @param duration 视频时长(秒)
+     * @param size 输出分辨率(可选)
      * @param referenceImageUrl 首帧参考图URL(可选,用于图生视频)
      * @return 视频生成API响应(包含任务ID)
      * @throws BusinessException 当API调用失败时抛出
@@ -673,6 +675,7 @@ public class VectorEngineClient {
             String model,
             String aspectRatio,
             Integer duration,
+            String size,
             String referenceImageUrl
     ) {
         log.info("调用视频生成API - 模型: {}, 画幅: {}, 时长: {}, 是否有参考图: {}",
@@ -686,7 +689,9 @@ public class VectorEngineClient {
         requestBody.add("model", model);
         requestBody.add("prompt", prompt);
         requestBody.add("seconds", String.valueOf(normalizeVideoSeconds(duration)));
-        String targetSize = mapAspectRatioToOpenAiVideoSize(aspectRatio);
+        String targetSize = size != null && !size.isBlank()
+                ? size
+                : mapAspectRatioToOpenAiVideoSize(aspectRatio);
         requestBody.add("size", targetSize);
 
         byte[] imageBytes = RestClient.create()
@@ -906,6 +911,32 @@ public class VectorEngineClient {
         }
     }
 
+    public VideoContentResponse downloadVideoContent(String taskId) {
+        try {
+            ResponseEntity<byte[]> response = restClient.get()
+                    .uri("/v1/videos/{id}/content", taskId)
+                    .retrieve()
+                    .toEntity(byte[].class);
+
+            byte[] body = response.getBody();
+            if (body == null || body.length == 0) {
+                throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "视频内容为空");
+            }
+
+            String contentType = null;
+            if (response.getHeaders() != null && response.getHeaders().getContentType() != null) {
+                contentType = response.getHeaders().getContentType().toString();
+            }
+
+            return new VideoContentResponse(body, contentType);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("下载视频内容失败 - taskId: {}", taskId, e);
+            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "下载视频内容失败: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * 文本生成API响应
      *
@@ -952,6 +983,11 @@ public class VectorEngineClient {
             String model,
             @com.fasterxml.jackson.annotation.JsonProperty("status_update_time")
             Long statusUpdateTime
+    ) {}
+
+    public record VideoContentResponse(
+            byte[] content,
+            String contentType
     ) {}
 
     /**

@@ -34,6 +34,7 @@ import com.ym.ai_story_studio_server.service.AsyncVideoTaskService;
 import com.ym.ai_story_studio_server.service.AssetCreationService;
 import com.ym.ai_story_studio_server.service.ChargingService;
 import com.ym.ai_story_studio_server.service.StorageService;
+import com.ym.ai_story_studio_server.util.ImageMergeUtil;
 import com.ym.ai_story_studio_server.util.UserContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
@@ -73,6 +75,7 @@ public class MQConsumer {
     private final AiVideoService aiVideoService;
     private final AsyncVideoTaskService asyncVideoTaskService;
     private final AiTextService aiTextService;
+    private final ImageMergeUtil imageMergeUtil;
     private final JobMapper jobMapper;
     private final AiProperties aiProperties;
     private final AssetMapper assetMapper;
@@ -586,6 +589,7 @@ public class MQConsumer {
                         finalAspectRatio,
                         aiProperties.getVideo().getDefaultDuration(),
                         null,
+                        null,
                         projectId
                 );
 
@@ -620,6 +624,8 @@ public class MQConsumer {
         Long projectId = msg.getProjectId();
         String prompt = msg.getPrompt();
         String aspectRatio = msg.getAspectRatio();
+        Integer duration = msg.getDuration();
+        String size = msg.getSize();
         String referenceImageUrl = msg.getReferenceImageUrl();
 
         log.info("执行单个分镜视频生成 - jobId: {}, shotId: {}, promptLength: {}, hasReference: {}",
@@ -630,9 +636,9 @@ public class MQConsumer {
         String finalAspectRatio = aspectRatio != null ? aspectRatio :
                 aiProperties.getVideo().getDefaultAspectRatio();
         String finalModel = aiProperties.getVideo().getModel();
-        Integer finalDuration = aiProperties.getVideo().getDefaultDuration();
+        Integer finalDuration = duration != null ? duration : aiProperties.getVideo().getDefaultDuration();
 
-        log.info("应用配置 - aspectRatio: {}, model: {}, duration: {}", finalAspectRatio, finalModel, finalDuration);
+        log.info("应用配置 - aspectRatio: {}, model: {}, duration: {}, size: {}", finalAspectRatio, finalModel, finalDuration, size);
 
         try {
             // 1. 查询分镜
@@ -641,38 +647,26 @@ public class MQConsumer {
                 throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.SHOT_NOT_FOUND);
             }
 
-            // 2. 如果没有提供参考图，尝试从资产系统查询分镜图片
+            // 2. 如果没有提供参考图，尝试从资产系统查询分镜当前图片
             if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
-                // 直接从 assets + asset_versions 表查询分镜图片
-                com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.ym.ai_story_studio_server.entity.Asset> assetQuery =
-                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
-                assetQuery.eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerType, "SHOT")
-                        .eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerId, shotId)
-                        .eq(com.ym.ai_story_studio_server.entity.Asset::getAssetType, "SHOT_IMG")
-                        .orderByDesc(com.ym.ai_story_studio_server.entity.Asset::getCreatedAt)
-                        .last("LIMIT 1");
+                // 查询分镜当前图片资产
+                AssetRef currentImageRef = assetRefMapper.selectOne(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AssetRef>()
+                        .eq(AssetRef::getRefType, "SHOT_IMG_CURRENT")
+                        .eq(AssetRef::getRefOwnerId, shotId)
+                );
                 
-                com.ym.ai_story_studio_server.entity.Asset shotAsset = assetMapper.selectOne(assetQuery);
-                
-                if (shotAsset != null) {
-                    // 查询最新的READY状态版本
-                    com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AssetVersion> versionQuery =
-                            new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
-                    versionQuery.eq(AssetVersion::getAssetId, shotAsset.getId())
-                            .eq(AssetVersion::getStatus, "READY")
-                            .isNotNull(AssetVersion::getUrl)
-                            .orderByDesc(AssetVersion::getVersionNo)
-                            .last("LIMIT 1");
-                    
-                    AssetVersion latestVersion = assetVersionMapper.selectOne(versionQuery);
-                    
-                    if (latestVersion != null && latestVersion.getUrl() != null) {
-                        referenceImageUrl = latestVersion.getUrl();
-                        log.info("未提供参考图，使用分镜图片 - shotId: {}, assetId: {}, imageUrl: {}", 
-                                shotId, shotAsset.getId(), referenceImageUrl);
+                if (currentImageRef != null) {
+                    // 查询资产版本获取URL
+                    AssetVersion assetVersion = assetVersionMapper.selectById(currentImageRef.getAssetVersionId());
+                    if (assetVersion != null && assetVersion.getUrl() != null) {
+                        referenceImageUrl = assetVersion.getUrl();
+                        log.info("未提供参考图，使用分镜当前图片 - shotId: {}, imageUrl: {}", shotId, referenceImageUrl);
                     }
                 }
             }
+
+            referenceImageUrl = buildMergedReferenceImageUrl(referenceImageUrl, msg);
 
             // 3. 验证参考图是否存在
             if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
@@ -697,6 +691,7 @@ public class MQConsumer {
                         finalModel,
                         finalAspectRatio,
                         finalDuration,
+                        size,
                         referenceImageUrl
                 );
 
@@ -709,6 +704,7 @@ public class MQConsumer {
                     metaData.put("model", finalModel);
                     metaData.put("aspectRatio", finalAspectRatio);
                     metaData.put("duration", finalDuration);
+                    metaData.put("size", size);
                     metaData.put("prompt", finalPrompt);
                     metaData.put("apiTaskId", apiTaskId);
                     Job job = jobMapper.selectById(jobId);
@@ -741,6 +737,129 @@ public class MQConsumer {
             updateJobFailed(jobId, e.getMessage());
             throw e;
         }
+    }
+
+    private String buildMergedReferenceImageUrl(String referenceImageUrl, SingleShotVideoMessage msg) {
+        List<String> imageUrls = new ArrayList<>();
+
+        if (isValidReferenceUrl(referenceImageUrl)) {
+            imageUrls.add(referenceImageUrl);
+        }
+
+        if (msg.getScene() != null) {
+            if (isValidReferenceUrl(msg.getScene().thumbnailUrl())) {
+                imageUrls.add(msg.getScene().thumbnailUrl());
+            } else {
+                String sceneThumbnail = resolveSceneThumbnail(msg.getScene().id());
+                if (isValidReferenceUrl(sceneThumbnail)) {
+                    imageUrls.add(sceneThumbnail);
+                }
+            }
+        }
+
+        if (msg.getCharacters() != null) {
+            for (var character : msg.getCharacters()) {
+                if (isValidReferenceUrl(character.thumbnailUrl())) {
+                    imageUrls.add(character.thumbnailUrl());
+                    continue;
+                }
+                String characterThumbnail = resolveCharacterThumbnail(character.id());
+                if (isValidReferenceUrl(characterThumbnail)) {
+                    imageUrls.add(characterThumbnail);
+                }
+            }
+        }
+
+        if (msg.getProps() != null) {
+            for (var prop : msg.getProps()) {
+                if (isValidReferenceUrl(prop.thumbnailUrl())) {
+                    imageUrls.add(prop.thumbnailUrl());
+                    continue;
+                }
+                String propThumbnail = resolvePropThumbnail(prop.id());
+                if (isValidReferenceUrl(propThumbnail)) {
+                    imageUrls.add(propThumbnail);
+                }
+            }
+        }
+
+        imageUrls = imageUrls.stream().distinct().toList();
+
+        if (imageUrls.isEmpty()) {
+            return referenceImageUrl;
+        }
+
+        if (imageUrls.size() == 1) {
+            return imageUrls.get(0);
+        }
+
+        try {
+            byte[] mergedImageBytes = imageMergeUtil.mergeImagesHorizontally(imageUrls);
+            String mergedUrl = storageService.uploadImageBytes(
+                    mergedImageBytes,
+                    "merged_video_ref_" + System.currentTimeMillis() + ".png"
+            );
+            log.info("参考图已拼接并上传: {}", mergedUrl);
+            return mergedUrl;
+        } catch (Exception e) {
+            log.warn("参考图拼接失败，回退到首张参考图: {}", e.getMessage());
+            return imageUrls.get(0);
+        }
+    }
+
+    private boolean isValidReferenceUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+        return !url.contains("via.placeholder.com");
+    }
+
+    private String resolveSceneThumbnail(Long projectSceneId) {
+        if (projectSceneId == null) {
+            return null;
+        }
+        ProjectScene projectScene = projectSceneMapper.selectById(projectSceneId);
+        if (projectScene == null) {
+            return null;
+        }
+        if (projectScene.getLibrarySceneId() == null) {
+            return null;
+        }
+        SceneLibrary sceneLibrary = sceneLibraryMapper.selectById(projectScene.getLibrarySceneId());
+        return sceneLibrary != null ? sceneLibrary.getThumbnailUrl() : null;
+    }
+
+    private String resolveCharacterThumbnail(Long projectCharacterId) {
+        if (projectCharacterId == null) {
+            return null;
+        }
+        ProjectCharacter projectCharacter = projectCharacterMapper.selectById(projectCharacterId);
+        if (projectCharacter == null) {
+            return null;
+        }
+        if (isValidReferenceUrl(projectCharacter.getThumbnailUrl())) {
+            return projectCharacter.getThumbnailUrl();
+        }
+        if (projectCharacter.getLibraryCharacterId() == null) {
+            return null;
+        }
+        CharacterLibrary characterLibrary = characterLibraryMapper.selectById(projectCharacter.getLibraryCharacterId());
+        return characterLibrary != null ? characterLibrary.getThumbnailUrl() : null;
+    }
+
+    private String resolvePropThumbnail(Long projectPropId) {
+        if (projectPropId == null) {
+            return null;
+        }
+        ProjectProp projectProp = projectPropMapper.selectById(projectPropId);
+        if (projectProp == null) {
+            return null;
+        }
+        if (projectProp.getLibraryPropId() == null) {
+            return null;
+        }
+        PropLibrary propLibrary = propLibraryMapper.selectById(projectProp.getLibraryPropId());
+        return propLibrary != null ? propLibrary.getThumbnailUrl() : null;
     }
 
     private void executeBatchCharacterImageGeneration(BatchTaskMessage msg) {

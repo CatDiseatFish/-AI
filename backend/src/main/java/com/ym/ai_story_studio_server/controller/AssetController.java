@@ -133,39 +133,48 @@ public class AssetController {
     }
 
     /**
-     * 从 URL 下载图片（返回 blob 流）
+     * 从 URL 下载资源（返回 blob 流）
      *
-     * <p>通过后端代理下载图片，解决前端CORS问题。
-     * 主要用于复制图片功能。
+     * <p>通过后端代理下载资源，解决前端CORS问题。
+     * 主要用于复制图片/视频功能。
      *
-     * @param url 图片URL
-     * @return 图片二进制流
+     * @param request 下载请求
+     * @return 资源二进制流
      */
     @PostMapping("/download-from-url")
     public ResponseEntity<byte[]> downloadFromUrl(@RequestBody DownloadFromUrlRequest request) {
         try {
             log.info("收到下载图片请求, url: {}", request.url());
             
-            // 从 URL 下载图片
+            // 从 URL 下载资源
             URL imageUrl = new URL(request.url());
-            try (InputStream inputStream = imageUrl.openStream()) {
+            java.net.URLConnection connection = imageUrl.openConnection();
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(30000);
+            try (InputStream inputStream = connection.getInputStream()) {
                 byte[] imageBytes = inputStream.readAllBytes();
-                
-                // 根据文件扩展名判断 content type
-                String contentType = "image/jpeg"; // 默认
-                String urlStr = request.url().toLowerCase();
-                if (urlStr.endsWith(".png")) {
-                    contentType = "image/png";
-                } else if (urlStr.endsWith(".jpg") || urlStr.endsWith(".jpeg")) {
-                    contentType = "image/jpeg";
-                } else if (urlStr.endsWith(".gif")) {
-                    contentType = "image/gif";
-                } else if (urlStr.endsWith(".webp")) {
-                    contentType = "image/webp";
+
+                // 先尝试从响应获取 content type，再按扩展名兜底
+                String contentType = connection.getContentType();
+                if (contentType == null || contentType.isBlank()) {
+                    String urlStr = request.url().toLowerCase();
+                    if (urlStr.endsWith(".png")) {
+                        contentType = "image/png";
+                    } else if (urlStr.endsWith(".jpg") || urlStr.endsWith(".jpeg")) {
+                        contentType = "image/jpeg";
+                    } else if (urlStr.endsWith(".gif")) {
+                        contentType = "image/gif";
+                    } else if (urlStr.endsWith(".webp")) {
+                        contentType = "image/webp";
+                    } else if (urlStr.endsWith(".mp4")) {
+                        contentType = "video/mp4";
+                    } else {
+                        contentType = "application/octet-stream";
+                    }
                 }
-                
-                log.info("图片下载成功, 大小: {} bytes, contentType: {}", imageBytes.length, contentType);
-                
+
+                log.info("资源下载成功, 大小: {} bytes, contentType: {}", imageBytes.length, contentType);
+
                 return ResponseEntity.ok()
                         .contentType(MediaType.parseMediaType(contentType))
                         .body(imageBytes);

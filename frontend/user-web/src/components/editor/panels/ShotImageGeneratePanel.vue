@@ -23,6 +23,7 @@ const emit = defineEmits<{
 const currentShot = computed<StoryboardShotVO | undefined>(() => {
   return editorStore.shots.find(s => s.id === props.shotId)
 })
+const hasShotScript = computed(() => !!currentShot.value?.scriptText?.trim())
 
 // 数量选择
 const quantity = ref(1)

@@ -428,6 +428,7 @@ public class AsyncBatchTaskService {
                             prompt,
                             finalAspectRatio,
                             duration,
+                            null,
                             referenceImageUrl,  // 传递第一张参考图片URL
                             projectId
                     );
