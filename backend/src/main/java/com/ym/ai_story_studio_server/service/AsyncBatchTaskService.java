@@ -1052,7 +1052,7 @@ public class AsyncBatchTaskService {
             
             // 2. 获取绑定的角色ID列表
             List<Long> characterIds = bindings.stream()
-                    .map(com.ym.ai_story_studio_server.entity.ShotBinding::getRefId)
+                    .map(com.ym.ai_story_studio_server.entity.ShotBinding::getBindId)
                     .collect(java.util.stream.Collectors.toList());
             
             // 3. 批量查询项目角色
@@ -1069,13 +1069,13 @@ public class AsyncBatchTaskService {
                     log.debug("使用项目角色缩略图 - characterId: {}, url: {}", character.getId(), imageUrl);
                 }
                 // 优先级2: 从角色库获取缩略图
-                else if (character.getCharacterLibraryId() != null) {
+                else if (character.getLibraryCharacterId() != null) {
                     com.ym.ai_story_studio_server.entity.CharacterLibrary libraryChar = 
-                            characterLibraryMapper.selectById(character.getCharacterLibraryId());
+                            characterLibraryMapper.selectById(character.getLibraryCharacterId());
                     if (libraryChar != null && libraryChar.getThumbnailUrl() != null && !libraryChar.getThumbnailUrl().isEmpty()) {
                         imageUrl = libraryChar.getThumbnailUrl();
                         log.debug("使用角色库缩略图 - characterId: {}, libraryId: {}, url: {}", 
-                                character.getId(), character.getCharacterLibraryId(), imageUrl);
+                                character.getId(), character.getLibraryCharacterId(), imageUrl);
                     }
                 }
                 // 优先级3: 从角色资产表获取
