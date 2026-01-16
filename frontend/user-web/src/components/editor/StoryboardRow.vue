@@ -343,18 +343,35 @@ const handleCharacterClick = (characterId: number) => {
   }
 }
 
-// Scene thumbnail click handler
+// Scene thumbnail click handler - 跟角色一样，没有图片时传入剧本让AI解析
 const handleSceneClick = (sceneId: number) => {
   // 从 editorStore 获取完整的场景信息
   const scene = editorStore.scenes.find(s => s.id === sceneId)
   
-  panelManagerStore.openPanel('asset-edit', {
-    assetType: 'scene',
-    assetId: sceneId,
-    sceneName: (scene as any)?.displayName || scene?.name,
-    existingThumbnailUrl: scene?.thumbnailUrl,
-    existingDescription: (scene as any)?.finalDescription || (scene as any)?.description
-  })
+  // 如果场景没有图片，传递剧本文本让AI解析
+  if (!scene?.thumbnailUrl) {
+    let scriptText = editorStore.originalScript || props.shot.scriptText
+    if (scriptText.length > 2000) {
+      scriptText = scriptText.substring(0, 2000) + '...'
+    }
+    
+    panelManagerStore.openPanel('asset-edit', {
+      assetType: 'scene',
+      assetId: sceneId,
+      sceneName: (scene as any)?.displayName || scene?.name,
+      prefillDescription: scriptText,  // 让AI解析
+      existingDescription: (scene as any)?.finalDescription || (scene as any)?.description
+    })
+  } else {
+    // 已有图片，正常打开编辑面板
+    panelManagerStore.openPanel('asset-edit', {
+      assetType: 'scene',
+      assetId: sceneId,
+      sceneName: (scene as any)?.displayName || scene?.name,
+      existingThumbnailUrl: scene?.thumbnailUrl,
+      existingDescription: (scene as any)?.finalDescription || (scene as any)?.description
+    })
+  }
 }
 
 // 点击新建场景 - 第一次带AI描述，后续自定义
@@ -646,15 +663,32 @@ const handleDeleteScene = async (sceneId: number, event: Event) => {
   }
 }
 
-// 点击场景卡片 - 跳转到编辑面板
+// 点击场景卡片 - 跳转到编辑面板，跟角色一样处理
 const handleSceneCardClick = (scene: any) => {
-  panelManagerStore.openPanel('asset-edit', {
-    assetType: 'scene',
-    assetId: scene.id,
-    sceneName: scene.displayName || scene.name,
-    existingThumbnailUrl: scene.thumbnailUrl,
-    existingDescription: (scene as any).finalDescription || (scene as any).description
-  })
+  // 如果场景没有图片，传递剧本文本让AI解析
+  if (!scene.thumbnailUrl) {
+    let scriptText = editorStore.originalScript || props.shot.scriptText
+    if (scriptText.length > 2000) {
+      scriptText = scriptText.substring(0, 2000) + '...'
+    }
+    
+    panelManagerStore.openPanel('asset-edit', {
+      assetType: 'scene',
+      assetId: scene.id,
+      sceneName: scene.displayName || scene.name,
+      prefillDescription: scriptText,  // 让AI解析
+      existingDescription: (scene as any).finalDescription || (scene as any).description
+    })
+  } else {
+    // 已有图片，正常打开编辑面板
+    panelManagerStore.openPanel('asset-edit', {
+      assetType: 'scene',
+      assetId: scene.id,
+      sceneName: scene.displayName || scene.name,
+      existingThumbnailUrl: scene.thumbnailUrl,
+      existingDescription: (scene as any).finalDescription || (scene as any).description
+    })
+  }
 }
 
 // 从表格中解绑角色（不需要确认）
