@@ -31,10 +31,16 @@ const STORAGE_KEY = 'yuanmeng_model_config'
  */
 const DEFAULT_CONFIG: ModelConfig = {
   languageModel: 'gemini-3-pro-preview',         // 语言模型默认
-  characterImageModel: 'jimeng-4.5',             // 角色画像默认
-  sceneImageModel: 'jimeng-4.5',                 // 场景画像默认
-  shotImageModel: 'jimeng-4.5',                  // 分镜画面默认
+  characterImageModel: 'gemini-3-pro-image-preview', // 角色画像默认
+  sceneImageModel: 'gemini-3-pro-image-preview',     // 场景画像默认
+  shotImageModel: 'gemini-3-pro-image-preview',      // 分镜画面默认
   videoModel: 'sora-2',                          // 视频生成默认
+}
+
+const sanitizeModel = (value: string | undefined, fallback: string) => {
+  if (!value) return fallback
+  if (value.toLowerCase().startsWith('jimeng')) return fallback
+  return value
 }
 
 /**
@@ -45,7 +51,14 @@ const loadConfig = (): ModelConfig => {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored) {
       const parsed = JSON.parse(stored)
-      return { ...DEFAULT_CONFIG, ...parsed }
+      const merged = { ...DEFAULT_CONFIG, ...parsed }
+      return {
+        languageModel: sanitizeModel(merged.languageModel, DEFAULT_CONFIG.languageModel),
+        characterImageModel: sanitizeModel(merged.characterImageModel, DEFAULT_CONFIG.characterImageModel),
+        sceneImageModel: sanitizeModel(merged.sceneImageModel, DEFAULT_CONFIG.sceneImageModel),
+        shotImageModel: sanitizeModel(merged.shotImageModel, DEFAULT_CONFIG.shotImageModel),
+        videoModel: sanitizeModel(merged.videoModel, DEFAULT_CONFIG.videoModel),
+      }
     }
   } catch (error) {
     console.error('[ModelConfigStore] Failed to load config:', error)
@@ -115,21 +128,31 @@ export const useModelConfigStore = defineStore('modelConfig', {
     updateConfig(config: Partial<ModelConfig>) {
       console.log('[ModelConfigStore] Updating config:', config)
       if (config.languageModel !== undefined) {
-        this.languageModel = config.languageModel
+        this.languageModel = sanitizeModel(config.languageModel, DEFAULT_CONFIG.languageModel)
       }
       if (config.characterImageModel !== undefined) {
-        this.characterImageModel = config.characterImageModel
+        this.characterImageModel = sanitizeModel(config.characterImageModel, DEFAULT_CONFIG.characterImageModel)
       }
       if (config.sceneImageModel !== undefined) {
-        this.sceneImageModel = config.sceneImageModel
+        this.sceneImageModel = sanitizeModel(config.sceneImageModel, DEFAULT_CONFIG.sceneImageModel)
       }
       if (config.shotImageModel !== undefined) {
-        this.shotImageModel = config.shotImageModel
+        this.shotImageModel = sanitizeModel(config.shotImageModel, DEFAULT_CONFIG.shotImageModel)
       }
       if (config.videoModel !== undefined) {
-        this.videoModel = config.videoModel
+        this.videoModel = sanitizeModel(config.videoModel, DEFAULT_CONFIG.videoModel)
       }
       saveConfig(this.allConfig)
+    },
+
+    loadFromJson(modelConfigJson?: string | null) {
+      if (!modelConfigJson) return
+      try {
+        const parsed = JSON.parse(modelConfigJson) as Partial<ModelConfig>
+        this.updateConfig(parsed)
+      } catch (error) {
+        console.error('[ModelConfigStore] Failed to parse modelConfigJson:', error)
+      }
     },
 
     /**

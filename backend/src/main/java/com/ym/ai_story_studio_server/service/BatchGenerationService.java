@@ -1,6 +1,7 @@
 package com.ym.ai_story_studio_server.service;
 
 import com.ym.ai_story_studio_server.common.ResultCode;
+import com.ym.ai_story_studio_server.config.AiProperties;
 import com.ym.ai_story_studio_server.dto.ai.BatchGenerateRequest;
 import com.ym.ai_story_studio_server.dto.ai.BatchGenerateResponse;
 import com.ym.ai_story_studio_server.dto.ai.ParseTextRequest;
@@ -21,12 +22,16 @@ import com.ym.ai_story_studio_server.mapper.ProjectSceneMapper;
 import com.ym.ai_story_studio_server.mapper.ProjectPropMapper;
 import com.ym.ai_story_studio_server.mapper.StoryboardShotMapper;
 import com.ym.ai_story_studio_server.util.UserContext;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 /**
@@ -104,6 +109,8 @@ public class BatchGenerationService {
     private final ProjectCharacterMapper projectCharacterMapper;
     private final ProjectSceneMapper projectSceneMapper;
     private final ProjectPropMapper projectPropMapper;
+    private final AiProperties aiProperties;
+    private final ObjectMapper objectMapper;
 
     /**
      * 批量生成分镜图
@@ -145,10 +152,18 @@ public class BatchGenerationService {
         // 2. 验证分镜ID列表
         validateShotIds(projectId, request.targetIds());
 
+        String finalModel = resolveModel(project, request.model(), "shotImageModel", aiProperties.getImage().getDefaultModel());
+
         // 3. 创建Job任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_SHOT_IMG",
                 request.targetIds().size());
         log.info("批量生成分镜图任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", request.aspectRatio());
+        metaData.put("targetType", "shot");
+        metaData.put("targetIds", request.targetIds());
+        updateJobMeta(job.getId(), metaData);
 
         // 4. 发送MQ消息执行批量生成
         mqProducer.sendBatchShotImageTask(
@@ -159,7 +174,7 @@ public class BatchGenerationService {
                 request.mode(),
                 request.getCountPerItemOrDefault(),
                 request.aspectRatio(),
-                request.model()
+                finalModel
         );
 
         log.info("批量生成分镜图任务已提交 - jobId: {}", job.getId());
@@ -208,10 +223,18 @@ public class BatchGenerationService {
         // 2. 验证分镜ID列表
         validateShotIds(projectId, request.targetIds());
 
+        String finalModel = resolveModel(project, request.model(), "videoModel", aiProperties.getVideo().getModel());
+
         // 2. 创建Job任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_VIDEO",
                 request.targetIds().size());
         log.info("批量生成视频任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", request.aspectRatio());
+        metaData.put("targetType", "shot");
+        metaData.put("targetIds", request.targetIds());
+        updateJobMeta(job.getId(), metaData);
 
         // 3. 发送MQ消息执行批量生成
         mqProducer.sendBatchVideoTask(
@@ -222,7 +245,7 @@ public class BatchGenerationService {
                 request.mode(),
                 request.getCountPerItemOrDefault(),
                 request.aspectRatio(),
-                request.model()
+                finalModel
         );
 
         log.info("批量生成视频任务已提交 - jobId: {}", job.getId());
@@ -271,10 +294,18 @@ public class BatchGenerationService {
         // 2. 验证角色ID列表
         validateProjectCharacterIds(projectId, request.targetIds());
 
+        String finalModel = resolveModel(project, request.model(), "characterImageModel", aiProperties.getImage().getDefaultModel());
+
         // 2. 创建Job任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_CHAR_IMG",
                 request.targetIds().size());
         log.info("批量生成角色画像任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", request.aspectRatio());
+        metaData.put("targetType", "character");
+        metaData.put("targetIds", request.targetIds());
+        updateJobMeta(job.getId(), metaData);
 
         // 3. 发送MQ消息执行批量生成
         mqProducer.sendBatchCharacterImageTask(
@@ -285,7 +316,7 @@ public class BatchGenerationService {
                 request.mode(),
                 request.getCountPerItemOrDefault(),
                 request.aspectRatio(),
-                request.model()
+                finalModel
         );
 
         log.info("批量生成角色画像任务已提交 - jobId: {}", job.getId());
@@ -334,10 +365,18 @@ public class BatchGenerationService {
         // 2. 验证场景ID列表
         validateProjectSceneIds(projectId, request.targetIds());
 
+        String finalModel = resolveModel(project, request.model(), "sceneImageModel", aiProperties.getImage().getDefaultModel());
+
         // 2. 创建Job任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_SCENE_IMG",
                 request.targetIds().size());
         log.info("批量生成场景画像任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", request.aspectRatio());
+        metaData.put("targetType", "scene");
+        metaData.put("targetIds", request.targetIds());
+        updateJobMeta(job.getId(), metaData);
 
         // 3. 发送MQ消息执行批量生成
         mqProducer.sendBatchSceneImageTask(
@@ -348,7 +387,7 @@ public class BatchGenerationService {
                 request.mode(),
                 request.getCountPerItemOrDefault(),
                 request.aspectRatio(),
-                request.model()
+                finalModel
         );
 
         log.info("批量生成场景画像任务已提交 - jobId: {}", job.getId());
@@ -438,10 +477,18 @@ public class BatchGenerationService {
         // 2. 验证道具ID列表
         validateProjectPropIds(projectId, request.targetIds());
 
+        String finalModel = resolveModel(project, request.model(), "shotImageModel", aiProperties.getImage().getDefaultModel());
+
         // 2. 创建Job任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_PROP_IMG",
                 request.targetIds().size());
         log.info("批量生成道具画像任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", request.aspectRatio());
+        metaData.put("targetType", "prop");
+        metaData.put("targetIds", request.targetIds());
+        updateJobMeta(job.getId(), metaData);
 
         // 3. 发送MQ消息执行批量生成
         mqProducer.sendBatchPropImageTask(
@@ -452,7 +499,7 @@ public class BatchGenerationService {
                 request.mode(),
                 request.getCountPerItemOrDefault(),
                 request.aspectRatio(),
-                request.model()
+                finalModel
         );
 
         log.info("批量生成道具画像任务已提交 - jobId: {}", job.getId());
@@ -512,12 +559,20 @@ public class BatchGenerationService {
                 referenceImageUrls != null ? referenceImageUrls.size() : 0);
 
         // 验证项目存在性和权限
-        validateProjectAccess(userId, projectId);
+        Project project = validateProjectAccess(userId, projectId);
         validateShotIds(projectId, java.util.List.of(shotId));
+
+        String finalModel = resolveModel(project, model, "shotImageModel", aiProperties.getImage().getDefaultModel());
 
         // 创建 Job 任务
         Job job = createBatchJob(userId, projectId, "BATCH_GEN_SHOT_IMG", 1);
         log.info("单个分镜生成任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", aspectRatio);
+        metaData.put("targetType", "shot");
+        metaData.put("targetId", shotId);
+        updateJobMeta(job.getId(), metaData);
 
         // 发送MQ消息执行单个分镜生成(支持自定义prompt和参考图)
         mqProducer.sendSingleShotImageTask(
@@ -526,7 +581,7 @@ public class BatchGenerationService {
                 projectId,
                 shotId,
                 aspectRatio,
-                model,
+                finalModel,
                 customPrompt,
                 referenceImageUrls
         );
@@ -635,9 +690,18 @@ public class BatchGenerationService {
             throw new BusinessException(ResultCode.PARAM_INVALID, "视频时长仅支持10秒或15秒");
         }
 
+        String finalModel = resolveModel(project, null, "videoModel", aiProperties.getVideo().getModel());
+
         // 4. 创建Job任务
         Job job = createBatchJob(userId, projectId, "SINGLE_SHOT_VIDEO", 1);
         log.info("单个分镜视频生成任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", aspectRatio);
+        metaData.put("duration", duration);
+        metaData.put("targetType", "shot");
+        metaData.put("targetId", shotId);
+        updateJobMeta(job.getId(), metaData);
 
         // 5. 发送MQ消息执行视频生成
         // TODO: 根据实际MQ生产者接口调整
@@ -651,6 +715,7 @@ public class BatchGenerationService {
                 duration,
                 request.size(),
                 request.referenceImageUrl(),
+                finalModel,
                 request.scene(),
                 request.characters(),
                 request.props()
@@ -660,6 +725,59 @@ public class BatchGenerationService {
 
         // 6. 返回响应
         return BatchGenerateResponse.pending(job.getId(), 1);
+    }
+
+    private Map<String, String> parseModelConfig(Project project) {
+        if (project == null || project.getModelConfigJson() == null || project.getModelConfigJson().isBlank()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(
+                    project.getModelConfigJson(),
+                    new TypeReference<Map<String, String>>() {}
+            );
+        } catch (Exception e) {
+            log.warn("Failed to parse modelConfigJson for projectId={}", project.getId(), e);
+            return Collections.emptyMap();
+        }
+    }
+
+    private String resolveModel(Project project, String requestModel, String configKey, String fallbackModel) {
+        if (requestModel != null && !requestModel.isBlank()) {
+            return sanitizeModel(requestModel, fallbackModel);
+        }
+        String configModel = parseModelConfig(project).get(configKey);
+        return sanitizeModel(configModel, fallbackModel);
+    }
+
+    private String sanitizeModel(String model, String fallbackModel) {
+        if (model == null || model.isBlank()) {
+            return fallbackModel;
+        }
+        if (model.toLowerCase().startsWith("jimeng")) {
+            return fallbackModel;
+        }
+        return model;
+    }
+
+    private void updateJobMeta(Long jobId, Map<String, Object> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return;
+        }
+        try {
+            Job job = jobMapper.selectById(jobId);
+            if (job == null) {
+                return;
+            }
+            Map<String, Object> metaData = job.getMetaJson() != null && !job.getMetaJson().isBlank()
+                    ? objectMapper.readValue(job.getMetaJson(), new TypeReference<Map<String, Object>>() {})
+                    : new java.util.HashMap<>();
+            metaData.putAll(updates);
+            job.setMetaJson(objectMapper.writeValueAsString(metaData));
+            jobMapper.updateById(job);
+        } catch (Exception e) {
+            log.warn("Failed to update job metaJson, jobId={}", jobId, e);
+        }
     }
 
     /**

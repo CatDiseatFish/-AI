@@ -15,9 +15,11 @@ export const jobApi = {
   async getUserJobs(params: {
     page: number
     size: number
-    status?: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+    status?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELED'
+    jobType?: string
+    projectId?: number
   }): Promise<PageResult<JobVO>> {
-    return api.get('/jobs/my', { params })
+    return api.get('/jobs', { params })
   },
 
   /**

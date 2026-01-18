@@ -444,7 +444,11 @@ public class AsyncVideoTaskService {
                     metaData.put("duration", duration);
                     metaData.put("prompt", prompt != null ? prompt : "");
                     metaData.put("resultUrl", ossVideoUrl);
-                    job.setMetaJson(objectMapper.writeValueAsString(metaData));
+                    Map<String, Object> merged = job.getMetaJson() != null && !job.getMetaJson().isBlank()
+                            ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                            : new HashMap<>();
+                    merged.putAll(metaData);
+                    job.setMetaJson(objectMapper.writeValueAsString(merged));
                 } catch (Exception e) {
                     log.error("Failed to serialize meta_json", e);
                 }

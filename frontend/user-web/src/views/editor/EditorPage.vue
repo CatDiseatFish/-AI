@@ -4,11 +4,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { useEditorStore } from '@/stores/editor'
 import { useProjectStore } from '@/stores/project'
 import { useUserStore } from '@/stores/user'
+import { useModelConfigStore } from '@/stores/modelConfig'
 import { exportApi } from '@/api/export'
 import type { ExportRequest, ExportResponse } from '@/types/api'
 import StoryboardTable from '@/components/editor/StoryboardTable.vue'
 import RightPanelManager from '@/components/editor/RightPanelManager.vue'
 import BatchOperationBar from '@/components/editor/BatchOperationBar.vue'
+import HistoryPanel from '@/components/editor/panels/HistoryPanel.vue'
 import ModelConfigModal from './components/ModelConfigModal.vue'
 import ExportModal from './components/ExportModal.vue'
 import ExportProgressModal from './components/ExportProgressModal.vue'
@@ -20,12 +22,14 @@ const router = useRouter()
 const editorStore = useEditorStore()
 const projectStore = useProjectStore()
 const userStore = useUserStore()
+const modelConfigStore = useModelConfigStore()
 
 const projectId = computed(() => Number(route.params.id))
 const currentProject = computed(() => projectStore.currentProject)
 const showModelConfigModal = ref(false)
 const showExportModal = ref(false)
 const showExportProgressModal = ref(false)
+const showHistoryModal = ref(false)
 const exportJobId = ref<number | null>(null)
 
 onMounted(async () => {
@@ -33,6 +37,7 @@ onMounted(async () => {
     try {
       // Fetch project details and initialize editor
       await projectStore.fetchProjectDetail(projectId.value)
+      modelConfigStore.loadFromJson(projectStore.currentProject?.modelConfigJson)
       await editorStore.initProject(projectId.value)
     } catch (error) {
       console.error('[EditorPage] Failed to initialize:', error)
@@ -381,7 +386,10 @@ const handleExportScripts = () => {
 
       <!-- Center Section -->
       <div class="flex items-center gap-4 relative">
-        <button class="flex items-center gap-2 text-sm font-semibold text-white/70 hover:text-text-primary transition-colors">
+        <button
+          class="flex items-center gap-2 text-sm font-semibold text-white/70 hover:text-text-primary transition-colors"
+          @click="showHistoryModal = true"
+        >
           <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor">
             <path d="M158.983468 70.62069C120.00535 70.62069 88.275862 102.115222 88.275862 141.080964L88.275862 953.539725C88.275862 992.54242 119.980085 1024 158.983468 1024L865.016532 1024C903.99465 1024 935.724138 992.505468 935.724138 953.539725L935.724138 141.080964C935.724138 102.07827 904.019915 70.62069 865.016532 70.62069L759.172414 70.62069 794.482759 105.931034 794.482759 52.913081C794.482759 23.807011 770.796703 0 741.578417 0L282.421583 0C253.09101 0 229.517241 23.689781 229.517241 52.913081L229.517241 105.931034 264.827586 70.62069 158.983468 70.62069ZM300.137931 141.241379 300.137931 105.931034 300.137931 52.913081C300.137931 62.615111 292.171564 70.62069 282.421583 70.62069L741.578417 70.62069C731.713218 70.62069 723.862069 62.729446 723.862069 52.913081L723.862069 105.931034 723.862069 141.241379 759.172414 141.241379 865.016532 141.241379C865.140118 141.241379 865.103448 953.539725 865.103448 953.539725 865.103448 953.384748 158.983468 953.37931 158.983468 953.37931 158.859882 953.37931 158.896552 141.080964 158.896552 141.080964 158.896552 141.235942 264.827586 141.241379 264.827586 141.241379L300.137931 141.241379ZM723.862069 158.948988C723.862069 149.246958 731.828436 141.241379 741.578417 141.241379L282.421583 141.241379C292.286782 141.241379 300.137931 149.132623 300.137931 158.948988L300.137931 105.931034C300.137931 86.429678 284.328942 70.62069 264.827586 70.62069 245.32623 70.62069 229.517241 86.429678 229.517241 105.931034L229.517241 158.948988C229.517241 188.055058 253.203297 211.862069 282.421583 211.862069L741.578417 211.862069C770.90899 211.862069 794.482759 188.172288 794.482759 158.948988L794.482759 105.931034C794.482759 86.429678 778.67377 70.62069 759.172414 70.62069 739.671058 70.62069 723.862069 86.429678 723.862069 105.931034L723.862069 158.948988ZM723.862069 441.37931C743.363425 441.37931 759.172414 425.570322 759.172414 406.068966 759.172414 386.567609 743.363425 370.758621 723.862069 370.758621L300.137931 370.758621C280.636575 370.758621 264.827586 386.567609 264.827586 406.068966 264.827586 425.570322 280.636575 441.37931 300.137931 441.37931L723.862069 441.37931ZM300.137931 547.310345C280.636575 547.310345 264.827586 563.119334 264.827586 582.62069 264.827586 602.122046 280.636575 617.931034 300.137931 617.931034L723.862069 617.931034C743.363425 617.931034 759.172414 602.122046 759.172414 582.62069 759.172414 563.119334 743.363425 547.310345 723.862069 547.310345L300.137931 547.310345ZM300.137931 723.862069C280.636575 723.862069 264.827586 739.671058 264.827586 759.172414 264.827586 778.67377 280.636575 794.482759 300.137931 794.482759L582.62069 794.482759C602.122046 794.482759 617.931034 778.67377 617.931034 759.172414 617.931034 739.671058 602.122046 723.862069 582.62069 723.862069L300.137931 723.862069Z"></path>
           </svg>
@@ -434,6 +442,7 @@ const handleExportScripts = () => {
     <!-- Model Config Modal -->
     <ModelConfigModal
       :visible="showModelConfigModal"
+      :project-id="projectId"
       @update:visible="showModelConfigModal = $event"
       @close="showModelConfigModal = false"
     />
@@ -453,6 +462,20 @@ const handleExportScripts = () => {
       @complete="handleExportComplete"
       @failed="handleExportFailed"
     />
+
+    <!-- History Modal -->
+    <div
+      v-if="showHistoryModal"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      @click="showHistoryModal = false"
+    >
+      <div
+        class="w-[900px] max-w-[90vw] h-[80vh] bg-bg-elevated border border-border-default rounded-2xl shadow-2xl overflow-hidden"
+        @click.stop
+      >
+        <HistoryPanel @close="showHistoryModal = false" />
+      </div>
+    </div>
 
     <!-- Batch Operation Bar (底部浮动操作栏) -->
     <BatchOperationBar />

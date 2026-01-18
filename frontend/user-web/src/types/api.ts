@@ -60,6 +60,7 @@ export interface ProjectVO {
   aspectRatio: string
   styleCode: string
   eraSetting: string | null
+  modelConfigJson?: string
   createdAt: string
   updatedAt: string
   // Additional fields that may be returned by backend
@@ -76,6 +77,7 @@ export interface ProjectCreateRequest {
   styleCode: string
   eraSetting?: string
   rawText?: string
+  modelConfigJson?: string
 }
 
 // Aliases for convenience
@@ -413,6 +415,7 @@ export interface JobVO {
   resultUrl: string | null
   allImageUrls: string[] | null
   costPoints: number | null
+  metaJson?: string | null
   createdAt: string
 }
 

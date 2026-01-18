@@ -1,147 +1,196 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useEditorStore } from '@/stores/editor'
+import { jobApi } from '@/api/job'
+import type { JobVO } from '@/types/api'
 
-// Emits定义
 const emit = defineEmits<{
   close: []
 }>()
 
-// 筛选类型
-const filterType = ref<'all' | 'shot_image' | 'video'>('all')
-
-// 排序方式
+const editorStore = useEditorStore()
+const filterType = ref<'all' | 'image' | 'video'>('all')
 const sortBy = ref<'date' | 'type'>('date')
+const loading = ref(false)
+const historyRecords = ref<JobVO[]>([])
 
-// 历史记录数据（模拟）
-const historyRecords = ref<Array<{
-  id: number
-  type: 'shot_image' | 'video'
-  shotNo: number
-  thumbnailUrl: string
-  previewUrl: string
-  timestamp: string
-  aspectRatio: string
-  status: 'active' | 'expired'
-}>>([
-  {
-    id: 1,
-    type: 'shot_image',
-    shotNo: 1,
-    thumbnailUrl: '/placeholder1.jpg',
-    previewUrl: '/placeholder1.jpg',
-    timestamp: '2024-01-04 10:00',
-    aspectRatio: '21:9',
-    status: 'active'
-  },
-  {
-    id: 2,
-    type: 'shot_image',
-    shotNo: 1,
-    thumbnailUrl: '/placeholder2.jpg',
-    previewUrl: '/placeholder2.jpg',
-    timestamp: '2024-01-04 10:05',
-    aspectRatio: '16:9',
-    status: 'active'
-  },
-  {
-    id: 3,
-    type: 'video',
-    shotNo: 2,
-    thumbnailUrl: '/placeholder3.jpg',
-    previewUrl: '/video1.mp4',
-    timestamp: '2024-01-04 10:10',
-    aspectRatio: '16:9',
-    status: 'active'
-  },
-  {
-    id: 4,
-    type: 'shot_image',
-    shotNo: 3,
-    thumbnailUrl: '/placeholder4.jpg',
-    previewUrl: '/placeholder4.jpg',
-    timestamp: '2024-01-03 15:30',
-    aspectRatio: '1:1',
-    status: 'expired'
-  },
-])
+const loadHistory = async () => {
+  if (!editorStore.projectId) return
+  loading.value = true
+  try {
+    const response = await jobApi.getUserJobs({
+      page: 1,
+      size: 100,
+      projectId: editorStore.projectId,
+    })
+    historyRecords.value = response.records || []
+  } catch (error) {
+    console.error('[HistoryPanel] \u52a0\u8f7d\u5386\u53f2\u8bb0\u5f55\u5931\u8d25:', error)
+    historyRecords.value = []
+  } finally {
+    loading.value = false
+  }
+}
 
-// 过滤后的记录
+const parseMeta = (metaJson?: string | null) => {
+  if (!metaJson) return null
+  try {
+    return JSON.parse(metaJson) as Record<string, any>
+  } catch (error) {
+    console.warn('[HistoryPanel] metaJson\u89e3\u6790\u5931\u8d25:', error)
+    return null
+  }
+}
+
+const getJobCategory = (jobType: string) => {
+  if (jobType.includes('VIDEO')) return 'video'
+  if (jobType.includes('IMG')) return 'image'
+  return 'other'
+}
+
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
+const formatDateTime = (value?: string | null) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
+}
+
+const getTargetLabel = (record: JobVO) => {
+  const meta = parseMeta(record.metaJson)
+  const targetType = meta?.targetType as string | undefined
+  const targetId = meta?.targetId as number | undefined
+  const targetIds = Array.isArray(meta?.targetIds) ? meta?.targetIds as number[] : null
+
+  const formatShot = (id: number) => {
+    const shot = editorStore.shots.find(s => s.id === id)
+    if (shot?.shotNo != null) return `\u5206\u955c#${shot.shotNo}`
+    return `\u5206\u955c#${id}`
+  }
+
+  const formatByType = (type: string, id: number) => {
+    if (type === 'shot') return formatShot(id)
+    if (type === 'character') {
+      const character = editorStore.characters?.find(c => c.id === id)
+      return character?.characterName ? `\u89d2\u8272 ${character.characterName}` : `\u89d2\u8272#${id}`
+    }
+    if (type === 'scene') {
+      const scene = editorStore.scenes?.find(s => s.id === id)
+      return scene?.sceneName ? `\u573a\u666f ${scene.sceneName}` : `\u573a\u666f#${id}`
+    }
+    if (type === 'prop') {
+      const prop = editorStore.props?.find(p => p.id === id)
+      return prop?.propName ? `\u9053\u5177 ${prop.propName}` : `\u9053\u5177#${id}`
+    }
+    return id ? `\u7d20\u6750#${id}` : '-'
+  }
+
+  if (targetIds && targetIds.length > 0) {
+    const first = targetIds[0]
+    const label = targetType ? formatByType(targetType, first) : formatShot(first)
+    return targetIds.length > 1 ? `${label} \u7b49${targetIds.length}\u9879` : label
+  }
+  if (targetType && targetId != null) {
+    return formatByType(targetType, targetId)
+  }
+
+  if (record.jobType.includes('SHOT')) return '\u5206\u955c'
+  if (record.jobType.includes('CHAR')) return '\u89d2\u8272'
+  if (record.jobType.includes('SCENE')) return '\u573a\u666f'
+  if (record.jobType.includes('PROP')) return '\u9053\u5177'
+  if (record.jobType.includes('VIDEO')) return '\u5206\u955c'
+
+  return '-'
+}
+
+const getModelLabel = (record: JobVO) => {
+  const meta = parseMeta(record.metaJson)
+  return meta?.model || '\u9ed8\u8ba4'
+}
+
+const getTypeLabel = (record: JobVO) => {
+  const category = getJobCategory(record.jobType)
+  if (category === 'video') return '\u89c6\u9891'
+  if (category === 'image') return '\u56fe\u7247'
+  if (record.jobType.includes('TEXT')) return '\u6587\u672c'
+  return '\u5176\u4ed6'
+}
+
+const getStatusLabel = (status: JobVO['status']) => {
+  switch (status) {
+    case 'PENDING':
+      return '\u7b49\u5f85\u4e2d'
+    case 'RUNNING':
+      return '\u8fdb\u884c\u4e2d'
+    case 'SUCCEEDED':
+      return '\u5df2\u5b8c\u6210'
+    case 'FAILED':
+      return '\u5931\u8d25'
+    case 'CANCELED':
+      return '\u5df2\u53d6\u6d88'
+    default:
+      return status
+  }
+}
+
+const getWaitTime = (record: JobVO) => {
+  const createdAt = record.createdAt ? new Date(record.createdAt).getTime() : 0
+  const finishedAt = record.finishedAt ? new Date(record.finishedAt).getTime() : Date.now()
+  const seconds = Math.max(0, Math.floor((finishedAt - createdAt) / 1000))
+  return formatDuration(seconds)
+}
+
 const filteredRecords = computed(() => {
   let records = historyRecords.value
 
-  // 按类型过滤
   if (filterType.value !== 'all') {
-    records = records.filter(r => r.type === filterType.value)
+    records = records.filter(r => getJobCategory(r.jobType) === filterType.value)
   }
 
-  // 排序
   if (sortBy.value === 'date') {
     records = [...records].sort((a, b) =>
-      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     )
   } else if (sortBy.value === 'type') {
-    records = [...records].sort((a, b) => a.type.localeCompare(b.type))
+    records = [...records].sort((a, b) => a.jobType.localeCompare(b.jobType))
   }
 
   return records
 })
 
-// 预览记录
-const handlePreview = (record: any) => {
-  console.log('[HistoryPanel] Preview record:', record)
-  window.$message?.info('打开预览')
-}
-
-// 下载记录
-const handleDownload = (record: any) => {
-  console.log('[HistoryPanel] Download record:', record)
-  window.$message?.success('开始下载')
-}
-
-// 删除记录
-const handleDelete = (id: number) => {
-  console.log('[HistoryPanel] Delete record:', id)
-  const index = historyRecords.value.findIndex(r => r.id === id)
-  if (index !== -1) {
-    historyRecords.value.splice(index, 1)
-    window.$message?.success('删除成功')
-  }
-}
-
-// 批量删除过期记录
-const handleDeleteExpired = () => {
-  console.log('[HistoryPanel] Delete all expired records')
-  const beforeCount = historyRecords.value.length
-  historyRecords.value = historyRecords.value.filter(r => r.status !== 'expired')
-  const deletedCount = beforeCount - historyRecords.value.length
-  window.$message?.success(`已删除 ${deletedCount} 条过期记录`)
-}
-
-// 获取类型标签
-const getTypeLabel = (type: 'shot_image' | 'video') => {
-  return type === 'shot_image' ? '分镜图' : '视频'
-}
+onMounted(() => {
+  loadHistory()
+})
 </script>
 
 <template>
   <div class="flex flex-col h-full bg-bg-elevated">
-    <!-- 顶部导航 -->
     <div class="flex items-center gap-3 border-b border-border-default px-4 py-3">
       <button
         @click="$emit('close')"
         class="p-1.5 rounded hover:bg-bg-hover transition-colors"
-        title="返回"
+        title="&#x8fd4;&#x56de;"
       >
         <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
         </svg>
       </button>
-      <h3 class="text-text-primary text-base font-medium">历史记录</h3>
+      <h3 class="text-text-primary text-base font-medium">&#x5386;&#x53f2;&#x8bb0;&#x5f55;</h3>
     </div>
 
-    <!-- 筛选和排序栏 -->
     <div class="flex items-center justify-between px-4 py-3 border-b border-border-default">
-      <!-- 类型筛选 -->
       <div class="flex items-center gap-2">
         <button
           @click="filterType = 'all'"
@@ -152,18 +201,18 @@ const getTypeLabel = (type: 'shot_image' | 'video') => {
               : 'text-text-tertiary hover:bg-bg-subtle'
           ]"
         >
-          全部
+          &#x5168;&#x90e8;
         </button>
         <button
-          @click="filterType = 'shot_image'"
+          @click="filterType = 'image'"
           :class="[
             'px-4 py-2 rounded text-sm font-medium transition-all',
-            filterType === 'shot_image'
+            filterType === 'image'
               ? 'bg-bg-hover text-white'
               : 'text-text-tertiary hover:bg-bg-subtle'
           ]"
         >
-          分镜图
+          &#x56fe;&#x7247;
         </button>
         <button
           @click="filterType = 'video'"
@@ -174,111 +223,67 @@ const getTypeLabel = (type: 'shot_image' | 'video') => {
               : 'text-text-tertiary hover:bg-bg-subtle'
           ]"
         >
-          视频
+          &#x89c6;&#x9891;
         </button>
       </div>
 
-      <!-- 排序和操作 -->
       <div class="flex items-center gap-2">
         <select
           v-model="sortBy"
           class="px-3 py-2 bg-bg-subtle border border-border-default rounded text-text-primary text-xs focus:outline-none focus:border-gray-900/50 cursor-pointer"
         >
-          <option value="date" class="bg-bg-elevated">按日期排序</option>
-          <option value="type" class="bg-bg-elevated">按类型排序</option>
+          <option value="date" class="bg-bg-elevated">&#x6309;&#x65e5;&#x671f;&#x6392;&#x5e8f;</option>
+          <option value="type" class="bg-bg-elevated">&#x6309;&#x7c7b;&#x578b;&#x6392;&#x5e8f;</option>
         </select>
-
-        <button
-          @click="handleDeleteExpired"
-          class="px-3 py-2 bg-red-500/20 rounded text-red-400 text-xs font-medium hover:bg-red-500/30 transition-colors"
-        >
-          清理过期
-        </button>
       </div>
     </div>
 
-    <!-- 历史记录列表 -->
     <div class="flex-1 overflow-y-auto px-4 py-4">
-      <div v-if="filteredRecords.length === 0" class="text-center py-20">
+      <div v-if="loading" class="text-center py-20">
+        <p class="text-text-tertiary text-sm">&#x52a0;&#x8f7d;&#x4e2d;...</p>
+      </div>
+      <div v-else-if="filteredRecords.length === 0" class="text-center py-20">
         <svg class="w-16 h-16 mx-auto mb-4 text-text-disabled" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
         </svg>
-        <p class="text-text-tertiary text-sm">暂无历史记录</p>
+        <p class="text-text-tertiary text-sm">&#x6682;&#x65e0;&#x5386;&#x53f2;&#x8bb0;&#x5f55;</p>
       </div>
 
-      <div v-else class="grid grid-cols-3 gap-3">
-        <div
-          v-for="record in filteredRecords"
-          :key="record.id"
-          class="group relative rounded overflow-hidden bg-bg-subtle hover:bg-bg-hover transition-all cursor-pointer"
-        >
-          <!-- 缩略图 -->
-          <div class="relative aspect-video" @click="handlePreview(record)">
-            <img
-              :src="record.thumbnailUrl"
-              :alt="`${getTypeLabel(record.type)} #${record.shotNo}`"
-              class="w-full h-full object-cover"
+      <div v-else class="overflow-x-auto">
+        <table class="w-full text-left text-xs text-text-tertiary">
+          <thead class="text-text-secondary">
+            <tr>
+              <th class="py-2 pr-4">&#x7f16;&#x53f7;</th>
+              <th class="py-2 pr-4">&#x6240;&#x5c5e;&#x5206;&#x955c;/&#x7d20;&#x6750;</th>
+              <th class="py-2 pr-4">&#x7c7b;&#x578b;</th>
+              <th class="py-2 pr-4">&#x6a21;&#x578b;</th>
+              <th class="py-2 pr-4">&#x521b;&#x5efa;&#x65f6;&#x95f4;</th>
+              <th class="py-2 pr-4">&#x7b49;&#x5f85;&#x65f6;&#x95f4;</th>
+              <th class="py-2">&#x72b6;&#x6001;</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="record in filteredRecords"
+              :key="record.id"
+              class="border-t border-border-default text-text-primary"
             >
-
-            <!-- 视频播放按钮 -->
-            <div v-if="record.type === 'video'" class="absolute inset-0 bg-bg-subtle flex items-center justify-center">
-              <svg class="w-12 h-12 text-text-secondary" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z"></path>
-              </svg>
-            </div>
-
-            <!-- 过期标记 -->
-            <div
-              v-if="record.status === 'expired'"
-              class="absolute top-2 right-2 px-2 py-1 bg-red-500/90 rounded text-text-primary text-xs font-medium"
-            >
-              已过期
-            </div>
-
-            <!-- 类型标签 -->
-            <div class="absolute top-2 left-2 px-2 py-1 bg-gray-800 rounded text-white text-xs font-medium">
-              {{ getTypeLabel(record.type) }}
-            </div>
-
-            <!-- 操作按钮（hover显示） -->
-            <div class="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                @click.stop="handleDownload(record)"
-                class="p-1.5 bg-gray-800 rounded-lg hover:bg-gray-700 transition-colors"
-                title="下载"
-              >
-                <svg class="w-4 h-4 text-text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                </svg>
-              </button>
-              <button
-                @click.stop="handleDelete(record.id)"
-                class="p-1.5 bg-red-500/80  rounded-lg hover:bg-red-500 transition-colors"
-                title="删除"
-              >
-                <svg class="w-4 h-4 text-text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <!-- 信息栏 -->
-          <div class="px-3 py-2">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-text-secondary text-sm font-medium">分镜 #{{ record.shotNo }}</span>
-              <span class="text-text-tertiary text-xs">{{ record.aspectRatio }}</span>
-            </div>
-            <p class="text-text-tertiary text-xs">{{ record.timestamp }}</p>
-          </div>
-        </div>
+              <td class="py-2 pr-4">{{ record.id }}</td>
+              <td class="py-2 pr-4">{{ getTargetLabel(record) }}</td>
+              <td class="py-2 pr-4">{{ getTypeLabel(record) }}</td>
+              <td class="py-2 pr-4">{{ getModelLabel(record) }}</td>
+              <td class="py-2 pr-4">{{ formatDateTime(record.createdAt) }}</td>
+              <td class="py-2 pr-4">{{ getWaitTime(record) }}</td>
+              <td class="py-2">{{ getStatusLabel(record.status) }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <!-- 底部提示 -->
     <div class="px-4 py-3 border-t border-border-default">
       <p class="text-[#FF6B9D] text-xs text-center">
-        未被使用的生成记录仅保留7天，请及时下载文件
+        &#x672a;&#x88ab;&#x4f7f;&#x7528;&#x7684;&#x751f;&#x6210;&#x8bb0;&#x5f55;&#x4ec5;&#x4fdd;&#x7559;7&#x5929;&#xff0c;&#x8bf7;&#x53ca;&#x65f6;&#x4e0b;&#x8f7d;
       </p>
     </div>
   </div>

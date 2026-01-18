@@ -69,6 +69,11 @@ public class SingleShotVideoMessage implements Serializable {
     private String referenceImageUrl;
 
     /**
+     * 模型名称(可选)
+     */
+    private String model;
+
+    /**
      * 场景信息(可选)
      */
     private AssetResource scene;

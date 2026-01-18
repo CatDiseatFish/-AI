@@ -118,6 +118,7 @@ public class JobServiceImpl implements JobService {
                     job.getResultUrl(),
                     allImageUrls,
                     job.getCostPoints(),
+                    job.getMetaJson(),
                     job.getCreatedAt()
             );
         });

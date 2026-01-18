@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
  * @param styleCode 风格标识
  * @param eraSetting 时代设置
  * @param status 项目状态
+ * @param modelConfigJson 模型配置(JSON)
  * @param shotCount 分镜数量
  * @param createdAt 创建时间
  * @param updatedAt 更新时间
@@ -28,6 +29,7 @@ public record ProjectVO(
         String styleCode,
         String eraSetting,
         String status,
+        String modelConfigJson,
         Integer shotCount,
         LocalDateTime createdAt,
         LocalDateTime updatedAt

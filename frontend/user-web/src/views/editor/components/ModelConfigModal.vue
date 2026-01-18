@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { useModelConfigStore } from '@/stores/modelConfig'
+import { useProjectStore } from '@/stores/project'
+import { projectApi } from '@/api/apis'
 import CustomSelect from '@/components/base/CustomSelect.vue'
 import { modelApi } from '@/api/model'
 import type { ModelVO } from '@/api/model'
@@ -8,6 +10,7 @@ import type { ModelVO } from '@/api/model'
 // Props
 interface Props {
   visible: boolean
+  projectId?: number
 }
 
 const props = defineProps<Props>()
@@ -20,6 +23,7 @@ const emit = defineEmits<{
 
 // Store
 const modelConfigStore = useModelConfigStore()
+const projectStore = useProjectStore()
 
 // Local state (for editing)
 const localLanguageModel = ref(modelConfigStore.currentLanguageModel)
@@ -44,18 +48,40 @@ const fetchModelOptions = async () => {
       modelApi.getModels('VIDEO'),
     ])
 
-    languageModelOptions.value = languageModels.map((m: ModelVO) => ({
+    languageModelOptions.value = languageModels
+      .filter((m: ModelVO) => !m.code?.toLowerCase().startsWith('jimeng'))
+      .map((m: ModelVO) => ({
       value: m.code,
       label: m.name
     }))
-    imageModelOptions.value = imageModels.map((m: ModelVO) => ({
+    imageModelOptions.value = imageModels
+      .filter((m: ModelVO) => !m.code?.toLowerCase().startsWith('jimeng'))
+      .map((m: ModelVO) => ({
       value: m.code,
       label: m.name
     }))
-    videoModelOptions.value = videoModels.map((m: ModelVO) => ({
+    videoModelOptions.value = videoModels
+      .filter((m: ModelVO) => !m.code?.toLowerCase().startsWith('jimeng'))
+      .map((m: ModelVO) => ({
       value: m.code,
       label: m.name
     }))
+
+    if (!languageModelOptions.value.some(option => option.value === localLanguageModel.value)) {
+      localLanguageModel.value = languageModelOptions.value[0]?.value || localLanguageModel.value
+    }
+    if (!imageModelOptions.value.some(option => option.value === localCharacterImageModel.value)) {
+      localCharacterImageModel.value = imageModelOptions.value[0]?.value || localCharacterImageModel.value
+    }
+    if (!imageModelOptions.value.some(option => option.value === localSceneImageModel.value)) {
+      localSceneImageModel.value = imageModelOptions.value[0]?.value || localSceneImageModel.value
+    }
+    if (!imageModelOptions.value.some(option => option.value === localShotImageModel.value)) {
+      localShotImageModel.value = imageModelOptions.value[0]?.value || localShotImageModel.value
+    }
+    if (!videoModelOptions.value.some(option => option.value === localVideoModel.value)) {
+      localVideoModel.value = videoModelOptions.value[0]?.value || localVideoModel.value
+    }
 
     console.log('[ModelConfigModal] Loaded models:', {
       language: languageModelOptions.value.length,
@@ -87,7 +113,7 @@ watch(() => props.visible, (newVisible) => {
 })
 
 // Handle save
-const handleSave = () => {
+const handleSave = async () => {
   modelConfigStore.updateConfig({
     languageModel: localLanguageModel.value,
     characterImageModel: localCharacterImageModel.value,
@@ -95,6 +121,19 @@ const handleSave = () => {
     shotImageModel: localShotImageModel.value,
     videoModel: localVideoModel.value,
   })
+  if (props.projectId) {
+    const modelConfigJson = JSON.stringify(modelConfigStore.allConfig)
+    try {
+      await projectApi.updateProject(props.projectId, { modelConfigJson })
+      if (projectStore.currentProject?.id === props.projectId) {
+        projectStore.currentProject.modelConfigJson = modelConfigJson
+      }
+    } catch (error) {
+      console.error('[ModelConfigModal] Failed to save model config:', error)
+      window.$message?.error('模型配置保存失败')
+      return
+    }
+  }
   window.$message?.success('模型配置已保存')
   handleClose()
 }

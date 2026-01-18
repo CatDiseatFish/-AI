@@ -662,6 +662,7 @@ public class MQConsumer {
         Integer duration = msg.getDuration();
         String size = msg.getSize();
         String referenceImageUrl = msg.getReferenceImageUrl();
+        String model = msg.getModel();
 
         log.info("执行单个分镜视频生成 - jobId: {}, shotId: {}, promptLength: {}, hasReference: {}",
                 jobId, shotId, prompt != null ? prompt.length() : 0, referenceImageUrl != null);
@@ -670,7 +671,9 @@ public class MQConsumer {
         // 应用配置
         String finalAspectRatio = aspectRatio != null ? aspectRatio :
                 aiProperties.getVideo().getDefaultAspectRatio();
-        String finalModel = aiProperties.getVideo().getModel();
+        String finalModel = model != null && !model.isBlank()
+                ? model
+                : aiProperties.getVideo().getModel();
         Integer finalDuration = duration != null ? duration : aiProperties.getVideo().getDefaultDuration();
 
         log.info("应用配置 - aspectRatio: {}, model: {}, duration: {}, size: {}", finalAspectRatio, finalModel, finalDuration, size);
@@ -742,9 +745,15 @@ public class MQConsumer {
                     metaData.put("size", size);
                     metaData.put("prompt", finalPrompt);
                     metaData.put("apiTaskId", apiTaskId);
+                    metaData.put("targetType", "shot");
+                    metaData.put("targetId", shotId);
                     Job job = jobMapper.selectById(jobId);
                     if (job != null) {
-                        job.setMetaJson(objectMapper.writeValueAsString(metaData));
+                        Map<String, Object> merged = job.getMetaJson() != null && !job.getMetaJson().isBlank()
+                                ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                                : new HashMap<>();
+                        merged.putAll(metaData);
+                        job.setMetaJson(objectMapper.writeValueAsString(merged));
                         jobMapper.updateById(job);
                     }
                 } catch (Exception e) {
@@ -1519,7 +1528,11 @@ public class MQConsumer {
             metaData.put("failCount", failCount);
             metaData.put("allImageUrls", allImageUrls);
             metaData.put("imageCount", allImageUrls.size());
-            job.setMetaJson(objectMapper.writeValueAsString(metaData));
+            Map<String, Object> merged = job.getMetaJson() != null && !job.getMetaJson().isBlank()
+                    ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                    : new HashMap<>();
+            merged.putAll(metaData);
+            job.setMetaJson(objectMapper.writeValueAsString(merged));
         } catch (Exception e) {
             log.error("序列化metaJson失败", e);
             job.setMetaJson(String.format("{\"successCount\": %d, \"failCount\": %d, \"imageCount\": %d}", 

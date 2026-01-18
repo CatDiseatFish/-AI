@@ -46,6 +46,8 @@ public class AiModelServiceImpl implements AiModelService {
         log.info("[AiModelService] 查询到{}条{}类型的模型", models.size(), type);
 
         return models.stream()
+                .filter(model -> model.getCode() == null
+                        || !model.getCode().toLowerCase().startsWith("jimeng"))
                 .map(this::convertToVO)
                 .collect(Collectors.toList());
     }

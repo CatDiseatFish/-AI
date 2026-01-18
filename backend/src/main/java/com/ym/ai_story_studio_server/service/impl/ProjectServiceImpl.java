@@ -107,6 +107,7 @@ public class ProjectServiceImpl implements ProjectService {
                     project.getStyleCode(),
                     project.getEraSetting(),
                     project.getStatus(),
+                    project.getModelConfigJson(),
                     shotCount.intValue(),
                     project.getCreatedAt(),
                     project.getUpdatedAt()
@@ -155,6 +156,7 @@ public class ProjectServiceImpl implements ProjectService {
                 project.getStyleCode(),
                 project.getEraSetting(),
                 project.getStatus(),
+                project.getModelConfigJson(),
                 shotCount.intValue(),
                 project.getCreatedAt(),
                 project.getUpdatedAt()
@@ -204,6 +206,7 @@ public class ProjectServiceImpl implements ProjectService {
                 project.getStyleCode(),
                 project.getEraSetting(),
                 project.getStatus(),
+                project.getModelConfigJson(),
                 0,
                 project.getCreatedAt(),
                 project.getUpdatedAt()

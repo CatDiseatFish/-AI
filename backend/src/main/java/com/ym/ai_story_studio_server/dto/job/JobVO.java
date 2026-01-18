@@ -43,6 +43,7 @@ public record JobVO(
         String resultUrl,
         java.util.List<String> allImageUrls,
         Integer costPoints,
+        String metaJson,
         LocalDateTime createdAt
 ) {
 }
