@@ -44,6 +44,18 @@ const referenceImageUrl = ref<string>('')
 // 生成的图片预览
 const generatedImageUrl = ref<string>('')
 
+const showImageOverlay = ref(false)
+const overlayImageUrl = ref<string>('')
+const openImageOverlay = (url: string) => {
+  if (!url) return
+  overlayImageUrl.value = url
+  showImageOverlay.value = true
+}
+const closeImageOverlay = () => {
+  showImageOverlay.value = false
+  overlayImageUrl.value = ''
+}
+
 // 是否正在生成
 const isGenerating = ref(false)
 
@@ -143,6 +155,7 @@ const mergeAssetImages = async (): Promise<string | null> => {
   console.log('[ShotImageGeneratePanel] currentShot.value:', currentShot.value)
   
   const imageUrls: string[] = []
+  const imageItems: Array<{ label: string; imageUrl: string }> = []
   
   // 收集角色图片
   console.log('[ShotImageGeneratePanel] 角色列表:', currentShot.value.characters)
@@ -151,6 +164,10 @@ const mergeAssetImages = async (): Promise<string | null> => {
       console.log(`[ShotImageGeneratePanel] 角色${index + 1}: ${char.characterName}, thumbnailUrl: ${char.thumbnailUrl}`)
       if (char.thumbnailUrl) {
         imageUrls.push(char.thumbnailUrl)
+        imageItems.push({
+          label: `${char.characterName || '角色'} 人物参考`,
+          imageUrl: char.thumbnailUrl
+        })
         console.log(`[ShotImageGeneratePanel] ✅ 角色${index + 1}已添加`)
       } else {
         console.log(`[ShotImageGeneratePanel] ❌ 角色${index + 1} thumbnailUrl为空`)
@@ -165,6 +182,12 @@ const mergeAssetImages = async (): Promise<string | null> => {
   if (currentShot.value.scene?.thumbnailUrl) {
     console.log(`[ShotImageGeneratePanel] 场景: ${currentShot.value.scene.sceneName}, thumbnailUrl: ${currentShot.value.scene.thumbnailUrl}`)
     imageUrls.push(currentShot.value.scene.thumbnailUrl)
+    imageItems.push({
+      label: currentShot.value.scene.sceneName
+        ? `${currentShot.value.scene.sceneName} 场景参考`
+        : '场景参考',
+      imageUrl: currentShot.value.scene.thumbnailUrl
+    })
     console.log('[ShotImageGeneratePanel] ✅ 场景已添加')
   } else {
     console.log('[ShotImageGeneratePanel] ❌ 场景thumbnailUrl为空或没有场景')
@@ -177,6 +200,10 @@ const mergeAssetImages = async (): Promise<string | null> => {
       console.log(`[ShotImageGeneratePanel] 道具${index + 1}: ${prop.propName}, thumbnailUrl: ${prop.thumbnailUrl}`)
       if (prop.thumbnailUrl) {
         imageUrls.push(prop.thumbnailUrl)
+        imageItems.push({
+          label: `${prop.propName || '道具'} 道具参考`,
+          imageUrl: prop.thumbnailUrl
+        })
         console.log(`[ShotImageGeneratePanel] ✅ 道具${index + 1}已添加`)
       } else {
         console.log(`[ShotImageGeneratePanel] ❌ 道具${index + 1} thumbnailUrl为空`)
@@ -197,7 +224,7 @@ const mergeAssetImages = async (): Promise<string | null> => {
   try {
     // 调用后端拼接接口
     const response = await api.post('/utils/images/merge', {
-      imageUrls
+      imageItems
     })
     
     console.log('[ShotImageGeneratePanel] 图片拼接成功:', response.mergedImageUrl)
@@ -497,6 +524,7 @@ onMounted(() => {
             :src="generatedImageUrl"
             alt="分镜预览"
             class="w-full h-full object-cover"
+            @click.stop="openImageOverlay(generatedImageUrl)"
           >
           <!-- 操作按钮组（悬浮显示） -->
           <div class="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -673,6 +701,27 @@ onMounted(() => {
             生成记录保留7天，请及时保存或下载
           </p>
         </div>
+      </div>
+    </div>
+    <div
+      v-if="showImageOverlay"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      @click="closeImageOverlay"
+    >
+      <div class="relative max-w-[90vw] max-h-[90vh]">
+        <img
+          :src="overlayImageUrl"
+          alt="分镜大图预览"
+          class="max-w-[90vw] max-h-[90vh] object-contain rounded"
+          @click.stop
+        >
+        <button
+          class="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gray-900 text-text-primary flex items-center justify-center hover:bg-gray-700 transition-colors"
+          title="关闭"
+          @click="closeImageOverlay"
+        >
+          ✕
+        </button>
       </div>
     </div>
   </div>

@@ -119,7 +119,7 @@ public class AsyncVideoTaskService {
                     pollVideoGenerationTask(
                             job.getId(),
                             apiTaskId,
-                            model != null ? model : "sora-2",
+                            model != null ? model : "sora-2-all",
                             aspectRatio != null ? aspectRatio : "16:9",
                             duration,
                             job.getUserId()

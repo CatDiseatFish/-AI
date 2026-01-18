@@ -113,8 +113,7 @@ const parseCharacterDescription = async (scriptText: string, characterName: stri
 2. 不要描述表情、动作、性格、物品、道具
 3. 用简洁的描述语，适合AI绘图理解
 4. 如果文本中没有该角色的外貌描述，请根据角色名称和场景合理推断
-5. 最后要添加姿势描述：正面站立或半身正面照，面向镜头
-6. 直接输出描述文本，不要其他说明
+5. 直接输出描述文本，不要其他说明
 
 文本内容：
 ${scriptText}`
@@ -306,6 +305,33 @@ ${scriptText}`
   }
 }
 
+const handleForceParse = async () => {
+  if (!props.prefillDescription) {
+    window.$message?.warning('缺少剧本文本，无法重新解析')
+    return
+  }
+  parseError.value = false
+  if (props.assetType === 'scene') {
+    if (!props.sceneName) {
+      window.$message?.warning('缺少场景名称，无法重新解析')
+      return
+    }
+    await parseSceneDescription(props.prefillDescription, props.sceneName)
+  } else if (props.assetType === 'prop') {
+    if (!props.propName) {
+      window.$message?.warning('缺少道具名称，无法重新解析')
+      return
+    }
+    await parsePropDescription(props.prefillDescription, props.propName)
+  } else {
+    if (!props.characterName) {
+      window.$message?.warning('缺少角色名称，无法重新解析')
+      return
+    }
+    await parseCharacterDescription(props.prefillDescription, props.characterName)
+  }
+}
+
 // 组件挂载时自动解析
 onMounted(async () => {
   console.log('[AssetEditPanel] Mounted with props:', {
@@ -338,6 +364,8 @@ onMounted(async () => {
     } else {
       currentCharacterName.value = props.characterName || ''
     }
+    // 有已有描述时不自动触发解析
+    return
   } else if (props.prefillDescription) {
     // 根据资产类型调用不同的解析函数
     if (props.assetType === 'scene' && props.sceneName) {
@@ -402,6 +430,18 @@ const referenceImageUrl = ref<string>('')
 
 // 生成的图片预览
 const generatedImageUrl = ref<string>('')
+
+const showImageOverlay = ref(false)
+const overlayImageUrl = ref<string>('')
+const openImageOverlay = (url: string) => {
+  if (!url) return
+  overlayImageUrl.value = url
+  showImageOverlay.value = true
+}
+const closeImageOverlay = () => {
+  showImageOverlay.value = false
+  overlayImageUrl.value = ''
+}
 
 // 当前操作的角色ID（AI生成后会更新为新角色ID）
 const currentCharacterId = ref<number | undefined>(props.assetId)
@@ -1203,6 +1243,10 @@ const handleCharacterGenerate = async () => {
   if (props.assetId) {
     // 为现有角色生成新图片
     targetCharacterId = props.assetId
+    if (editorStore.isAssetGenerating('character', targetCharacterId)) {
+      window.$message?.info('该角色正在生成中，请稍候')
+      return
+    }
     console.log('[AssetEditPanel] 为现有角色生成图片:', targetCharacterId)
     
     // ✅ 先更新角色描述（AI分析后的内容）
@@ -1232,25 +1276,34 @@ const handleCharacterGenerate = async () => {
     targetCharacterId = projectCharacter.id
   }
   
-  // 3. 调用图片生成API
-  const response = await generationApi.generateSingleCharacter(
-    editorStore.projectId!,
-    targetCharacterId,
-    {
-      aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
-    }
-  )
-  
-  console.log('[AssetEditPanel] 生成任务已提交:', response)
-  window.$message?.success('图片生成任务已提交')
-  
-  // 4. 轮询任务状态
-  if (response.jobId) {
-    await pollCharacterJobUntilComplete(response.jobId, targetCharacterId)
+  if (editorStore.isAssetGenerating('character', targetCharacterId)) {
+    window.$message?.info('该角色正在生成中，请稍候')
+    return
   }
-  
-  // 5. 刷新角色列表
-  await editorStore.fetchCharacters()
+  editorStore.markAssetGenerating('character', targetCharacterId)
+  try {
+    // 3. 调用图片生成API
+    const response = await generationApi.generateSingleCharacter(
+      editorStore.projectId!,
+      targetCharacterId,
+      {
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+      }
+    )
+    
+    console.log('[AssetEditPanel] 生成任务已提交:', response)
+    window.$message?.success('图片生成任务已提交')
+    
+    // 4. 轮询任务状态
+    if (response.jobId) {
+      await pollCharacterJobUntilComplete(response.jobId, targetCharacterId)
+    }
+    
+    // 5. 刷新角色列表
+    await editorStore.fetchCharacters()
+  } finally {
+    editorStore.clearAssetGenerating('character', targetCharacterId)
+  }
 }
 
 // 场景图片生成
@@ -1261,6 +1314,10 @@ const handleSceneGenerate = async () => {
   if (props.assetId) {
     // 为现有场景生成新图片
     targetSceneId = props.assetId
+    if (editorStore.isAssetGenerating('scene', targetSceneId)) {
+      window.$message?.info('该场景正在生成中，请稍候')
+      return
+    }
     console.log('[AssetEditPanel] 为现有场景生成图片:', targetSceneId)
     
     // 更新场景描述
@@ -1300,28 +1357,37 @@ const handleSceneGenerate = async () => {
     }
   }
   
-  // 3. 调用场景图片生成API
-  const response = await generationApi.generateSingleScene(
-    editorStore.projectId!,
-    targetSceneId,
-    {
-      aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
-    }
-  )
-  
-  console.log('[AssetEditPanel] 场景生成任务已提交:', response)
-  window.$message?.success('场景图片生成任务已提交')
-  
-  // 4. 轮询任务状态
-  if (response.jobId) {
-    await pollSceneJobUntilComplete(response.jobId, targetSceneId)
+  if (editorStore.isAssetGenerating('scene', targetSceneId)) {
+    window.$message?.info('该场景正在生成中，请稍候')
+    return
   }
-  
-  // 5. 刷新场景列表和分镜数据
-  await Promise.all([
-    editorStore.fetchScenes(),
-    editorStore.fetchShots()  // 同时刷新分镜，以更新场景缩略图
-  ])
+  editorStore.markAssetGenerating('scene', targetSceneId)
+  try {
+    // 3. 调用场景图片生成API
+    const response = await generationApi.generateSingleScene(
+      editorStore.projectId!,
+      targetSceneId,
+      {
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+      }
+    )
+    
+    console.log('[AssetEditPanel] 场景生成任务已提交:', response)
+    window.$message?.success('场景图片生成任务已提交')
+    
+    // 4. 轮询任务状态
+    if (response.jobId) {
+      await pollSceneJobUntilComplete(response.jobId, targetSceneId)
+    }
+    
+    // 5. 刷新场景列表和分镜数据
+    await Promise.all([
+      editorStore.fetchScenes(),
+      editorStore.fetchShots()  // 同时刷新分镜，以更新场景缩略图
+    ])
+  } finally {
+    editorStore.clearAssetGenerating('scene', targetSceneId)
+  }
 }
 
 // 道具图片生成
@@ -1332,6 +1398,10 @@ const handlePropGenerate = async () => {
   if (props.assetId) {
     // 为现有道具生成新图片
     targetPropId = props.assetId
+    if (editorStore.isAssetGenerating('prop', targetPropId)) {
+      window.$message?.info('该道具正在生成中，请稍候')
+      return
+    }
     console.log('[AssetEditPanel] 为现有道具生成图片:', targetPropId)
     
     // 更新道具描述
@@ -1371,28 +1441,37 @@ const handlePropGenerate = async () => {
     }
   }
   
-  // 3. 调用道具图片生成API
-  const response = await generationApi.generateSingleProp(
-    editorStore.projectId!,
-    targetPropId,
-    {
-      aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
-    }
-  )
-  
-  console.log('[AssetEditPanel] 道具生成任务已提交:', response)
-  window.$message?.success('道具图片生成任务已提交')
-  
-  // 4. 轮询任务状态
-  if (response.jobId) {
-    await pollPropJobUntilComplete(response.jobId, targetPropId)
+  if (editorStore.isAssetGenerating('prop', targetPropId)) {
+    window.$message?.info('该道具正在生成中，请稍候')
+    return
   }
-  
-  // 5. 刷新道具列表和分镜数据
-  await Promise.all([
-    editorStore.fetchProps(),
-    editorStore.fetchShots()
-  ])
+  editorStore.markAssetGenerating('prop', targetPropId)
+  try {
+    // 3. 调用道具图片生成API
+    const response = await generationApi.generateSingleProp(
+      editorStore.projectId!,
+      targetPropId,
+      {
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+      }
+    )
+    
+    console.log('[AssetEditPanel] 道具生成任务已提交:', response)
+    window.$message?.success('道具图片生成任务已提交')
+    
+    // 4. 轮询任务状态
+    if (response.jobId) {
+      await pollPropJobUntilComplete(response.jobId, targetPropId)
+    }
+    
+    // 5. 刷新道具列表和分镜数据
+    await Promise.all([
+      editorStore.fetchProps(),
+      editorStore.fetchShots()
+    ])
+  } finally {
+    editorStore.clearAssetGenerating('prop', targetPropId)
+  }
 }
 
 // 轮询角色任务状态直到完成
@@ -1968,6 +2047,7 @@ const handleCopyImage = async () => {
             :src="generatedImageUrl"
             :alt="`${assetTypeText}图片`"
             class="w-full h-full object-cover"
+            @click.stop="openImageOverlay(generatedImageUrl)"
           >
           <!-- 操作按钮组（悬浮显示） -->
           <div class="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -2124,6 +2204,17 @@ const handleCopyImage = async () => {
             </svg>
             重试解析
           </button>
+          <!-- 手动重新解析 -->
+          <button
+            v-else
+            @click="handleForceParse"
+            class="absolute bottom-3 right-3 px-3 py-1 bg-bg-subtle border border-border-default rounded-lg text-text-secondary text-xs hover:bg-bg-hover transition-colors flex items-center gap-1"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+            </svg>
+            重新解析
+          </button>
         </div>
       </div>
 
@@ -2264,6 +2355,27 @@ const handleCopyImage = async () => {
         
         <!-- 提示信息始终显示 -->
         <p class="text-[#FF6B9D] text-xs text-center">未被使用的生成记录仅保留7天，请及时下载文件</p>
+      </div>
+    </div>
+    <div
+      v-if="showImageOverlay"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      @click="closeImageOverlay"
+    >
+      <div class="relative max-w-[90vw] max-h-[90vh]">
+        <img
+          :src="overlayImageUrl"
+          :alt="`${assetTypeText}大图预览`"
+          class="max-w-[90vw] max-h-[90vh] object-contain rounded"
+          @click.stop
+        >
+        <button
+          class="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gray-900 text-text-primary flex items-center justify-center hover:bg-gray-700 transition-colors"
+          title="关闭"
+          @click="closeImageOverlay"
+        >
+          ✕
+        </button>
       </div>
     </div>
   </div>

@@ -99,9 +99,13 @@ public class ShotServiceImpl implements ShotService {
         Map<Long, List<ShotBinding>> bindingMap = bindings.stream()
                 .collect(Collectors.groupingBy(ShotBinding::getShotId));
 
-        // 5. 转换为VO列表
+        // 5. 转换为VO列表（缓存重复场景/角色/道具的缩略图计算）
+        Map<Long, String> characterThumbnailCache = new java.util.HashMap<>();
+        Map<Long, String> sceneThumbnailCache = new java.util.HashMap<>();
+        Map<Long, String> propThumbnailCache = new java.util.HashMap<>();
         List<ShotVO> voList = shots.stream()
-                .map(shot -> convertToVO(shot, bindingMap.get(shot.getId())))
+                .map(shot -> convertToVO(shot, bindingMap.get(shot.getId()),
+                        characterThumbnailCache, sceneThumbnailCache, propThumbnailCache))
                 .collect(Collectors.toList());
 
         log.info("分镜列表转换完成,返回{}条记录", voList.size());
@@ -425,6 +429,8 @@ public class ShotServiceImpl implements ShotService {
         List<String> scriptSegments = parseResult.getScriptSegments();
         List<String> characters = parseResult.getCharacters();
         List<String> scenes = parseResult.getScenes();
+        Map<String, String> characterDescriptions = parseResult.getCharacterDescriptions();
+        Map<String, String> sceneDescriptions = parseResult.getSceneDescriptions();
         
         log.info("AI解析完成，拆分为{}条分镜，{}个角色，{}个场景", 
                 scriptSegments.size(), characters.size(), scenes.size());
@@ -444,7 +450,8 @@ public class ShotServiceImpl implements ShotService {
         }
 
         // 4. 创建项目角色和场景，并绑定到分镜
-        createAndBindCharactersAndScenes(userId, projectId, createdShots, characters, scenes);
+        createAndBindCharactersAndScenes(userId, projectId, createdShots, characters, scenes,
+                characterDescriptions, sceneDescriptions);
 
         log.info("批量创建分镜完成: count={}", createdShots.size());
         return createdShots;
@@ -458,43 +465,55 @@ public class ShotServiceImpl implements ShotService {
      */
     private AiParseScriptResult parseScriptWithCharactersAndScenes(String fullScript) {
         String systemPrompt = """
-            一、你是一个专业的剧本大师，请将以下文案转换为剧本格式，并提取角色和场景信息
-            
+            一、你是一个专业的剧本大师，请将以下文案转换为剧本格式，并且推理出所有角色及角色形象提示词，所有场景及场景提示词
+
             要求：
-            1.将内容分镜化，每个镜头的字数严格控制在99字以内
-            2.保持文案所有情节，角色对话全部保留，不得增删改一字
-            3.严格按照剧本格式输出
-            4.提取剧本中出现的所有角色名称
-            5.提取剧本中涉及的所有场景描述
-            
+             1.将内容分镜化，每个镜头的字数严格控制在100字以内，
+             2.保持文案所有情节，角色对话全部保留，不得增删改一字
+             3.角色形象必须包含年龄，性别，发色发型，眼睛颜色，上身服装，下身服装，每个输出结果必须有不一样的着装需要更好分辨
+             4.严格按照剧本格式输出，每个镜头的字数严格控制在100字以内，具体要求如下:
+
             格式规范:
-            -场景编号格式:场x-y，如"场1-1"代表第1集第一个场景
+            -使用标准剧本格式，包含场景标题、镜头、运镜、主体人物、动作描述、表情描述、台词等元素
+            -场景编号格式:场x-y，如"场1-1"代表第1集第一个场景，"场1-2”代表第1集第二个场景，以此类推
             -时间信息:夜/日，清晰表明是晚上还是白天
             -地点类型:外/内，明确是室外还是室内
-            -具体地点:如别墅、酒店、广场等
-            -使用括号标注镜头和动作
+            -具体地点:如别墅、酒店、广场等具体场景
+            使用▲符号标注除对话外的内容，主要为镜头，运镜，人物动作和人物表情
             -不要使用**等非剧本格式的符号
-            -允许使用的景别：中景、近景、特写
-            -中景：用于展示两人互动、相对位置或上半身动作
-            -近景：用于常规对话、面部表情捕捉
-            -特写：用于强调手部动作、物品细节或眼神微表情
-            
-            输出格式要求：
-            1. 使用JSON格式输出，包含三个字段：script_segments、characters、scenes
-            2. script_segments: 分镜段落列表，每个分镜之间用 "---" 分隔
-            3. characters: 角色名称列表，去重，只包含人名，不包含描述
-            4. scenes: 场景描述列表，包含时间、地点、环境等描述
-            5. JSON格式如下：
-            {
-                "script_segments": [
-                    "场1-1 日 内 咖啡厅\n出场人物:林辰、林清雪\n（中景）林辰和林清雪面对面坐着，桌上放着咖啡，叶辰说：\"我想和你谈谈我们的未来。\"\n（近景）叶辰表情严肃，镜头切至林清雪抬头看他，林清雪说：\"什么意思？\"\n（特写）叶辰的手从包里拿出户口本放在桌上，叶辰说：\"我想和你结婚。\"",
-                    "场1-2 日 内 咖啡厅\n出场人物:林辰、林清雪\n（近景）林清雪震惊地看着户口本，林清雪说：\"可是...我爸不同意。\"\n（特写）叶辰紧紧握住林清雪的手，叶辰说：\"我会说服他的，相信我。\"\n（中景）林清雪流泪，随后坚定地点头。林清雪说：\"我相信你。\""
-                ],
-                "characters": ["林辰", "林清雪"],
-                "scenes": ["咖啡厅 日 内", "咖啡厅 日 内"]
-            }
-            
-            直接输出JSON，不要其他说明。
+            -动作或神态后面结束之后，立马出现台词，不需要主句身份
+            -允许使用的景别：中景 (Medium Shot)、近景 (Close-up)、特写 (Extreme Close-up)。
+            -绝对禁止：全景 (Wide Shot)、远景 (Long Shot)。
+            -切换逻辑：
+                中景：用于展示两人互动、相对位置或上半身动作。
+                近景：用于常规对话、面部表情捕捉。
+                特写：用于强调手部动作、物品细节或眼神微表情。
+
+            示例格式:
+            所有角色及角色形象提示词
+            林霜：20岁左右，年轻女人，银色齐肩短发，黑色眼睛，上身穿着黑色皮衣和高领内搭，下身穿着黑色休闲裤
+            陈阳阳：18岁左右，年轻女孩，深棕色长发，红色眼睛，上身穿着黑色衬衫，下身穿着白色百褶裙
+            苏文渊：30岁左右，成熟男人，黑色长发，灰色眼睛，戴着金丝眼镜，上身穿着白色衬衫和深色针织开衫
+            张坚：40岁左右，中年男人，黄色寸头，棕色眼睛，上身穿着蓝色工装服，下身穿着灰色短裤
+            白玥：20岁左右，年轻男人，白色中长发，浅红色眼睛，上身穿着条纹衬衫，下身穿着黑色西装裤
+
+            所有场景及场景提示词(提示词中不要出现人物)
+            学校校园外景：现代都市的中学，白天，阳光明媚，三层教学楼，红色砖墙，绿树环绕，操场上有篮球架
+            家里客厅内部：温馨的家庭客厅，晚上，暖黄色灯光，沙发、茶几、电视，墙上挂着全家福
+            咖啡厅内部：闹市区的文艺咖啡厅，下午，柔和的暖光，木质桌椅，墙上挂着抽象画，空气中弥漫着咖啡香气，轻柔的爵士乐在播放
+            马路街道:马路,街头,繁华的商业街，夜晚，霓虹灯闪烁，两旁是各种店铺，远处可见高楼大厦的轮廓
+
+            场1-1 日 内 咖啡厅
+            出场人物:林辰、林清雪
+            ▲（中景）林辰和林清雪面对面坐着，桌上放着咖啡，叶辰说：“我想和你谈谈我们的未来。”
+            ▲（近景）叶辰表情严肃，镜头切至林清雪抬头看他，林清雪说：“什么意思？”
+            ▲（特写）叶辰的手从包里拿出户口本放在桌上，叶辰说：“我想和你结婚。”
+
+            场1-2 日 内 咖啡厅
+            出场人物:林辰、林清雪
+            ▲（近景）林清雪震惊地看着户口本，林清雪说：“可是...我爸不同意。”
+            ▲（特写）叶辰紧紧握住林清雪的手，叶辰说：“我会说服他的，相信我。”
+            ▲  (中景) 林清雪流泪，随后坚定地点头。林清雪说：“我相信你。”
             """;
 
         String prompt = systemPrompt + "\n\n用户文案：\n" + fullScript;
@@ -511,58 +530,57 @@ public class ShotServiceImpl implements ShotService {
 
         // 提取生成的文本
         String generatedText = response.choices() == null || response.choices().isEmpty()
-                ? "{}"
+                ? ""
                 : response.choices().get(0).message().content();
 
         log.debug("AI解析结果: {}", generatedText);
         
-        // 解析JSON响应
-        return parseAiResponseToJson(generatedText);
+        // 解析结构化文本响应
+        return parseAiResponseToResult(generatedText, fullScript);
     }
     
     /**
-     * 解析AI返回的JSON响应
+     * 解析AI返回的结构化文本响应
      *
-     * @param jsonResponse AI返回的JSON字符串
+     * @param aiResponse AI返回的文本
+     * @param fullScript 原始剧本（用于兜底解析）
      * @return 解析后的AI解析结果
      */
-    private AiParseScriptResult parseAiResponseToJson(String jsonResponse) {
+    private AiParseScriptResult parseAiResponseToResult(String aiResponse, String fullScript) {
         try {
-            // 尝试从AI响应中提取JSON部分
-            String cleanJson = extractJsonFromResponse(jsonResponse);
-            
-            // 使用Jackson ObjectMapper解析JSON
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            
-            // 解析为Map
-            @SuppressWarnings("unchecked")
-            Map<String, Object> jsonMap = mapper.readValue(cleanJson, Map.class);
-            
-            // 提取各个字段
-            List<String> scriptSegments = (List<String>) jsonMap.getOrDefault("script_segments", new ArrayList<>());
-            List<String> characters = (List<String>) jsonMap.getOrDefault("characters", new ArrayList<>());
-            List<String> scenes = (List<String>) jsonMap.getOrDefault("scenes", new ArrayList<>());
-            
-            // 如果scriptSegments为空，尝试从AI响应中提取分镜内容
-            if (scriptSegments == null || scriptSegments.isEmpty()) {
-                scriptSegments = extractScriptSegmentsFromText(jsonResponse);
+            if (aiResponse == null || aiResponse.trim().isEmpty()) {
+                log.warn("AI解析返回为空，使用备用解析逻辑");
+                return fallbackParseScriptWithCharactersAndScenes(fullScript);
             }
-            
-            // 如果characters为空，尝试从分镜中提取角色
-            if (characters == null || characters.isEmpty()) {
+
+            ParsedSections sections = parseStructuredSections(aiResponse);
+            List<String> scriptSegments = extractScriptSegmentsFromStoryboard(sections.storyboardText);
+
+            if (scriptSegments.isEmpty()) {
+                scriptSegments = extractScriptSegmentsFromText(aiResponse);
+            }
+            if (scriptSegments.isEmpty()) {
+                return fallbackParseScriptWithCharactersAndScenes(fullScript);
+            }
+
+            Map<String, String> characterDescriptions = sections.characterDescriptions;
+            Map<String, String> sceneDescriptions = sections.sceneDescriptions;
+
+            List<String> characters = new ArrayList<>(characterDescriptions.keySet());
+            if (characters.isEmpty()) {
                 characters = extractCharactersFromScriptSegments(scriptSegments);
             }
-            
-            // 如果scenes为空，尝试从分镜中提取场景
-            if (scenes == null || scenes.isEmpty()) {
+
+            List<String> scenes = new ArrayList<>(sceneDescriptions.keySet());
+            if (scenes.isEmpty()) {
                 scenes = extractScenesFromScriptSegments(scriptSegments);
             }
-            
-            return new AiParseScriptResult(scriptSegments, characters, scenes);
+
+            return new AiParseScriptResult(scriptSegments, characters, scenes,
+                    characterDescriptions, sceneDescriptions);
         } catch (Exception e) {
-            log.error("解析AI JSON响应失败: {}", e.getMessage(), e);
-            // 如果JSON解析失败，使用备用方法解析
-            return fallbackParseScriptWithCharactersAndScenes(jsonResponse);
+            log.warn("解析AI响应失败，使用备用解析逻辑: {}", e.getMessage());
+            return fallbackParseScriptWithCharactersAndScenes(fullScript);
         }
     }
     
@@ -583,6 +601,108 @@ public class ShotServiceImpl implements ShotService {
         
         // 如果找不到JSON结构，返回原响应
         return response;
+    }
+
+    private static class ParsedSections {
+        private Map<String, String> characterDescriptions = new java.util.LinkedHashMap<>();
+        private Map<String, String> sceneDescriptions = new java.util.LinkedHashMap<>();
+        private String storyboardText = "";
+    }
+
+    private ParsedSections parseStructuredSections(String response) {
+        ParsedSections sections = new ParsedSections();
+
+        String characterBlock = extractSection(response, "所有角色及角色形象提示词", "所有场景及场景提示词");
+        sections.characterDescriptions = parseKeyValueLines(characterBlock);
+
+        String sceneBlock = extractSection(response, "所有场景及场景提示词", "分镜剧本");
+        sections.sceneDescriptions = parseKeyValueLines(sceneBlock);
+
+        int storyboardIndex = response.indexOf("分镜剧本");
+        if (storyboardIndex >= 0) {
+            sections.storyboardText = response.substring(storyboardIndex + "分镜剧本".length()).trim();
+        } else {
+            sections.storyboardText = extractStoryboardFromText(response);
+        }
+
+        return sections;
+    }
+
+    private String extractSection(String response, String startMarker, String endMarker) {
+        int startIndex = response.indexOf(startMarker);
+        if (startIndex < 0) {
+            return "";
+        }
+        int contentStart = startIndex + startMarker.length();
+        int endIndex = response.indexOf(endMarker, contentStart);
+        if (endIndex < 0) {
+            endIndex = response.length();
+        }
+        return response.substring(contentStart, endIndex).trim();
+    }
+
+    private String extractStoryboardFromText(String response) {
+        Matcher matcher = Pattern.compile("(?m)^场\\d+-\\d+").matcher(response);
+        if (matcher.find()) {
+            return response.substring(matcher.start()).trim();
+        }
+        return "";
+    }
+
+    private Map<String, String> parseKeyValueLines(String block) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        if (block == null || block.isBlank()) {
+            return result;
+        }
+
+        String[] lines = block.split("\\R");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            int separatorIndex = trimmed.indexOf('：');
+            if (separatorIndex < 0) {
+                separatorIndex = trimmed.indexOf(':');
+            }
+            if (separatorIndex < 0) {
+                continue;
+            }
+            String name = trimmed.substring(0, separatorIndex).trim();
+            String description = trimmed.substring(separatorIndex + 1).trim();
+            if (!name.isEmpty()) {
+                result.putIfAbsent(name, description);
+            }
+        }
+
+        return result;
+    }
+
+    private List<String> extractScriptSegmentsFromStoryboard(String storyboardText) {
+        if (storyboardText == null || storyboardText.isBlank()) {
+            return new ArrayList<>();
+        }
+
+        List<Integer> indices = new ArrayList<>();
+        Matcher matcher = Pattern.compile("(?m)^场\\d+-\\d+").matcher(storyboardText);
+        while (matcher.find()) {
+            indices.add(matcher.start());
+        }
+        if (indices.isEmpty()) {
+            return extractScriptSegmentsFromText(storyboardText);
+        }
+
+        List<String> segments = new ArrayList<>();
+        for (int i = 0; i < indices.size(); i++) {
+            int start = indices.get(i);
+            int end = (i + 1 < indices.size()) ? indices.get(i + 1) : storyboardText.length();
+            String segment = storyboardText.substring(start, end).trim();
+            if (!segment.isEmpty()) {
+                segments.add(segment);
+            }
+        }
+
+        return segments;
     }
     
     /**
@@ -616,19 +736,10 @@ public class ShotServiceImpl implements ShotService {
         List<String> allCharacters = new ArrayList<>();
         
         for (String segment : scriptSegments) {
-            // 匹配 "出场人物:" 后面的角色名称
-            Pattern pattern = Pattern.compile("出场人物[::：]([^\\n]+)");
-            Matcher matcher = pattern.matcher(segment);
-            
-            if (matcher.find()) {
-                String charactersText = matcher.group(1);
-                // 按逗号、顿号或空格分割角色名称
-                String[] names = charactersText.split("[,、，。 ]+");
-                for (String name : names) {
-                    name = name.trim();
-                    if (!name.isEmpty() && !allCharacters.contains(name)) {
-                        allCharacters.add(name);
-                    }
+            List<String> segmentCharacters = extractCharactersFromScript(segment);
+            for (String name : segmentCharacters) {
+                if (!allCharacters.contains(name)) {
+                    allCharacters.add(name);
                 }
             }
         }
@@ -682,7 +793,8 @@ public class ShotServiceImpl implements ShotService {
         List<String> characters = extractCharactersFromScriptSegments(scriptSegments);
         List<String> scenes = extractScenesFromScriptSegments(scriptSegments);
         
-        return new AiParseScriptResult(scriptSegments, characters, scenes);
+        return new AiParseScriptResult(scriptSegments, characters, scenes,
+                new java.util.LinkedHashMap<>(), new java.util.LinkedHashMap<>());
     }
     
     /**
@@ -769,19 +881,23 @@ public class ShotServiceImpl implements ShotService {
      * @param characters 角色名称列表
      * @param scenes 场景描述列表
      */
-    private void createAndBindCharactersAndScenes(Long userId, Long projectId, List<ShotVO> shots, 
-                                                  List<String> characters, List<String> scenes) {
+    private void createAndBindCharactersAndScenes(Long userId, Long projectId, List<ShotVO> shots,
+                                                  List<String> characters, List<String> scenes,
+                                                  Map<String, String> characterDescriptions,
+                                                  Map<String, String> sceneDescriptions) {
         log.info("开始创建角色和场景并绑定到分镜: characters={}, scenes={}", 
                 characters.size(), scenes.size());
         
         // 创建项目角色
-        Map<String, ProjectCharacter> projectCharacterMap = createProjectCharacters(userId, projectId, characters);
+        Map<String, ProjectCharacter> projectCharacterMap = createProjectCharacters(userId, projectId, characters,
+                characterDescriptions);
         
         // 创建项目场景
-        Map<String, ProjectScene> projectSceneMap = createProjectScenes(userId, projectId, scenes);
+        Map<String, ProjectScene> projectSceneMap = createProjectScenes(userId, projectId, scenes,
+                sceneDescriptions);
         
         // 绑定角色和场景到分镜
-        bindCharactersAndScenesToShots(userId, projectId, shots, projectCharacterMap, projectSceneMap);
+        bindCharactersAndScenesToShots(userId, projectId, shots, projectCharacterMap, projectSceneMap, characters);
     }
     
     /**
@@ -792,7 +908,8 @@ public class ShotServiceImpl implements ShotService {
      * @param characters 角色名称列表
      * @return 项目角色映射（角色名 -> 项目角色对象）
      */
-    private Map<String, ProjectCharacter> createProjectCharacters(Long userId, Long projectId, List<String> characters) {
+    private Map<String, ProjectCharacter> createProjectCharacters(Long userId, Long projectId, List<String> characters,
+                                                                  Map<String, String> characterDescriptions) {
         Map<String, ProjectCharacter> characterMap = new java.util.HashMap<>();
         
         for (String characterName : characters) {
@@ -809,18 +926,29 @@ public class ShotServiceImpl implements ShotService {
             
             ProjectCharacter existingCharacter = projectCharacterMapper.selectOne(queryWrapper);
             
+            String description = characterDescriptions != null ? characterDescriptions.get(characterName) : null;
+
             if (existingCharacter == null) {
                 // 创建新角色
                 ProjectCharacter character = new ProjectCharacter();
                 character.setProjectId(projectId);
                 character.setDisplayName(characterName);
                 character.setLibraryCharacterId(null); // 无库角色关联，使用项目内自定义
+                if (description != null && !description.isBlank()) {
+                    character.setOverrideDescription(description.trim());
+                }
                 
                 projectCharacterMapper.insert(character);
                 characterMap.put(characterName, character);
                 
                 log.info("创建项目角色: {}", characterName);
             } else {
+                if ((existingCharacter.getOverrideDescription() == null
+                        || existingCharacter.getOverrideDescription().isBlank())
+                        && description != null && !description.isBlank()) {
+                    existingCharacter.setOverrideDescription(description.trim());
+                    projectCharacterMapper.updateById(existingCharacter);
+                }
                 characterMap.put(characterName, existingCharacter);
                 log.info("角色已存在，跳过创建: {}", characterName);
             }
@@ -837,7 +965,8 @@ public class ShotServiceImpl implements ShotService {
      * @param scenes 场景描述列表
      * @return 项目场景映射（场景名 -> 项目场景对象）
      */
-    private Map<String, ProjectScene> createProjectScenes(Long userId, Long projectId, List<String> scenes) {
+    private Map<String, ProjectScene> createProjectScenes(Long userId, Long projectId, List<String> scenes,
+                                                          Map<String, String> sceneDescriptions) {
         Map<String, ProjectScene> sceneMap = new java.util.HashMap<>();
         
         for (String sceneName : scenes) {
@@ -846,18 +975,26 @@ public class ShotServiceImpl implements ShotService {
             }
             
             sceneName = sceneName.trim();
+            String description = null;
+            if (sceneDescriptions != null) {
+                description = sceneDescriptions.get(sceneName);
+            }
             
             // 只保留地点名称，去掉"日/夜"和"内/外"等信息
             // 例如 "宿舍 日 内" -> "宿舍"
-            String[] parts = sceneName.split("\\s+");
+            String normalizedSceneName = sceneName;
+            String[] parts = normalizedSceneName.split("\\s+");
             if (parts.length > 0) {
-                sceneName = parts[0];
+                normalizedSceneName = parts[0];
+            }
+            if (description == null && sceneDescriptions != null) {
+                description = sceneDescriptions.get(normalizedSceneName);
             }
             
             // 检查是否已存在同名场景
             LambdaQueryWrapper<ProjectScene> queryWrapper = new LambdaQueryWrapper<>();
             queryWrapper.eq(ProjectScene::getProjectId, projectId)
-                      .eq(ProjectScene::getDisplayName, sceneName);
+                      .eq(ProjectScene::getDisplayName, normalizedSceneName);
             
             ProjectScene existingScene = projectSceneMapper.selectOne(queryWrapper);
             
@@ -865,16 +1002,25 @@ public class ShotServiceImpl implements ShotService {
                 // 创建新场景
                 ProjectScene scene = new ProjectScene();
                 scene.setProjectId(projectId);
-                scene.setDisplayName(sceneName);
+                scene.setDisplayName(normalizedSceneName);
                 scene.setLibrarySceneId(null); // 无库场景关联，使用项目内自定义
+                if (description != null && !description.isBlank()) {
+                    scene.setOverrideDescription(description.trim());
+                }
                 
                 projectSceneMapper.insert(scene);
-                sceneMap.put(sceneName, scene);
+                sceneMap.put(normalizedSceneName, scene);
                 
-                log.info("创建项目场景: {}", sceneName);
+                log.info("创建项目场景: {}", normalizedSceneName);
             } else {
-                sceneMap.put(sceneName, existingScene);
-                log.info("场景已存在，跳过创建: {}", sceneName);
+                if ((existingScene.getOverrideDescription() == null
+                        || existingScene.getOverrideDescription().isBlank())
+                        && description != null && !description.isBlank()) {
+                    existingScene.setOverrideDescription(description.trim());
+                    projectSceneMapper.updateById(existingScene);
+                }
+                sceneMap.put(normalizedSceneName, existingScene);
+                log.info("场景已存在，跳过创建: {}", normalizedSceneName);
             }
         }
         
@@ -892,12 +1038,22 @@ public class ShotServiceImpl implements ShotService {
      */
     private void bindCharactersAndScenesToShots(Long userId, Long projectId, List<ShotVO> shots,
                                                Map<String, ProjectCharacter> characterMap,
-                                               Map<String, ProjectScene> sceneMap) {
+                                               Map<String, ProjectScene> sceneMap,
+                                               List<String> allCharacters) {
         for (ShotVO shot : shots) {
             String scriptText = shot.scriptText();
             
             // 从剧本文本中提取出场人物
             List<String> shotCharacters = extractCharactersFromScript(scriptText);
+            if (shotCharacters.isEmpty() && allCharacters != null && !allCharacters.isEmpty()) {
+                java.util.Set<String> matched = new java.util.LinkedHashSet<>();
+                for (String name : allCharacters) {
+                    if (name != null && !name.isBlank() && scriptText.contains(name.trim())) {
+                        matched.add(name.trim());
+                    }
+                }
+                shotCharacters = new ArrayList<>(matched);
+            }
             
             // 绑定角色到分镜
             for (String characterName : shotCharacters) {
@@ -913,6 +1069,15 @@ public class ShotServiceImpl implements ShotService {
             
             if (placeName != null && !placeName.isEmpty()) {
                 ProjectScene projectScene = sceneMap.get(placeName);
+                if (projectScene == null) {
+                    for (Map.Entry<String, ProjectScene> entry : sceneMap.entrySet()) {
+                        String key = entry.getKey();
+                        if (key != null && (key.contains(placeName) || placeName.contains(key))) {
+                            projectScene = entry.getValue();
+                            break;
+                        }
+                    }
+                }
                 if (projectScene != null) {
                     createBindingIfNotExists(userId, projectId, shot.id(), "PSCENE", projectScene.getId());
                     log.info("场景绑定成功: shotId={}, sceneName={}", shot.id(), placeName);
@@ -969,18 +1134,16 @@ public class ShotServiceImpl implements ShotService {
     private List<String> extractCharactersFromScript(String scriptText) {
         List<String> characters = new ArrayList<>();
         
-        // 匹配 "出场人物:" 后面的角色名称
-        Pattern pattern = Pattern.compile("出场人物[::：]([^\\n]+)");
+        Pattern pattern = Pattern.compile("(?m)^[▲\\s]*(出场人物|主体人物|主体)\\s*[：:](.+)$");
         Matcher matcher = pattern.matcher(scriptText);
         
-        if (matcher.find()) {
-            String charactersText = matcher.group(1);
-            // 按逗号、顿号或空格分割角色名称
-            String[] names = charactersText.split("[,、，。 ]+");
+        while (matcher.find()) {
+            String charactersText = matcher.group(2);
+            String[] names = charactersText.split("[,、，。\\s]+");
             for (String name : names) {
-                name = name.trim();
-                if (!name.isEmpty() && !characters.contains(name)) {
-                    characters.add(name);
+                String trimmed = name.trim();
+                if (!trimmed.isEmpty() && !characters.contains(trimmed)) {
+                    characters.add(trimmed);
                 }
             }
         }
@@ -1087,7 +1250,10 @@ public class ShotServiceImpl implements ShotService {
      * @param bindings 绑定关系列表(可为null)
      * @return 分镜VO
      */
-    private ShotVO convertToVO(StoryboardShot shot, List<ShotBinding> bindings) {
+    private ShotVO convertToVO(StoryboardShot shot, List<ShotBinding> bindings,
+                               Map<Long, String> characterThumbnailCache,
+                               Map<Long, String> sceneThumbnailCache,
+                               Map<Long, String> propThumbnailCache) {
         List<BoundCharacterVO> characters = new ArrayList<>();
         BoundSceneVO scene = null;
         List<BoundPropVO> props = new ArrayList<>();
@@ -1136,50 +1302,55 @@ public class ShotServiceImpl implements ShotService {
                         ProjectCharacter character = charMap.get(binding.getBindId());
                         if (character != null) {
                             String thumbnailUrl = null;
-                            
-                            System.out.println("========== 开始处理角色 ==========");
-                            System.out.println("角色名称: " + character.getDisplayName());
-                            System.out.println("角色ID: " + character.getId());
-                            System.out.println("库角色ID: " + character.getLibraryCharacterId());
-                            System.out.println("项目角色thumbnailUrl: " + character.getThumbnailUrl());
-                            
-                            // 判断是否为自定义角色（未关联角色库）
-                            boolean isCustomCharacter = (character.getLibraryCharacterId() == null);
-                            
-                            if (isCustomCharacter) {
-                                // 自定义角色：直接使用项目角色的缩略图
-                                thumbnailUrl = character.getThumbnailUrl();
-                                System.out.println("自定义角色，使用项目角色缩略图: " + thumbnailUrl);
-                                log.debug("自定义角色[{}] thumbnailUrl:{}", character.getDisplayName(), thumbnailUrl);
+                            boolean cacheHit = characterThumbnailCache.containsKey(character.getId());
+                            if (cacheHit) {
+                                thumbnailUrl = characterThumbnailCache.get(character.getId());
                             } else {
-                                // 关联角色库：优先使用项目角色的缩略图，其次使用库的缩略图
-                                if (character.getThumbnailUrl() != null && !character.getThumbnailUrl().isEmpty()) {
+                                System.out.println("========== 开始处理角色 ==========");
+                                System.out.println("角色名称: " + character.getDisplayName());
+                                System.out.println("角色ID: " + character.getId());
+                                System.out.println("库角色ID: " + character.getLibraryCharacterId());
+                                System.out.println("项目角色thumbnailUrl: " + character.getThumbnailUrl());
+                                
+                                // 判断是否为自定义角色（未关联角色库）
+                                boolean isCustomCharacter = (character.getLibraryCharacterId() == null);
+                                
+                                if (isCustomCharacter) {
+                                    // 自定义角色：直接使用项目角色的缩略图
                                     thumbnailUrl = character.getThumbnailUrl();
-                                    System.out.println("使用项目角色缩略图: " + thumbnailUrl);
+                                    System.out.println("自定义角色，使用项目角色缩略图: " + thumbnailUrl);
+                                    log.debug("自定义角色[{}] thumbnailUrl:{}", character.getDisplayName(), thumbnailUrl);
                                 } else {
-                                    thumbnailUrl = thumbnailMap.get(character.getLibraryCharacterId());
-                                    System.out.println("使用库缩略图URL: " + thumbnailUrl);
+                                    // 关联角色库：优先使用项目角色的缩略图，其次使用库的缩略图
+                                    if (character.getThumbnailUrl() != null && !character.getThumbnailUrl().isEmpty()) {
+                                        thumbnailUrl = character.getThumbnailUrl();
+                                        System.out.println("使用项目角色缩略图: " + thumbnailUrl);
+                                    } else {
+                                        thumbnailUrl = thumbnailMap.get(character.getLibraryCharacterId());
+                                        System.out.println("使用库缩略图URL: " + thumbnailUrl);
+                                    }
+                                    log.debug("角色[{}] 库ID:{}, thumbnailUrl:{}", character.getDisplayName(), character.getLibraryCharacterId(), thumbnailUrl);
                                 }
-                                log.debug("角色[{}] 库ID:{}, thumbnailUrl:{}", character.getDisplayName(), character.getLibraryCharacterId(), thumbnailUrl);
-                            }
-                            
-                            // 如果还没有缩略图，查询角色的资产版本作为缩略图
-                            if (thumbnailUrl == null) {
-                                System.out.println("缩略图为空，查询角色资产...");
-                                AssetStatusVO assetStatus = getAssetStatus(character.getId(), "PCHAR", "IMAGE");
-                                System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
-                                System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
-                                log.debug("角色[{}] 资产状态: assetId={}, url={}", character.getDisplayName(), 
-                                    assetStatus != null ? assetStatus.assetId() : null,
-                                    assetStatus != null ? assetStatus.currentUrl() : null);
-                                if (assetStatus != null && assetStatus.currentUrl() != null) {
-                                    thumbnailUrl = assetStatus.currentUrl();
+                                
+                                // 如果还没有缩略图，查询角色的资产版本作为缩略图
+                                if (thumbnailUrl == null) {
+                                    System.out.println("缩略图为空，查询角色资产...");
+                                    AssetStatusVO assetStatus = getAssetStatus(character.getId(), "PCHAR", "IMAGE");
+                                    System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
+                                    System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
+                                    log.debug("角色[{}] 资产状态: assetId={}, url={}", character.getDisplayName(), 
+                                        assetStatus != null ? assetStatus.assetId() : null,
+                                        assetStatus != null ? assetStatus.currentUrl() : null);
+                                    if (assetStatus != null && assetStatus.currentUrl() != null) {
+                                        thumbnailUrl = assetStatus.currentUrl();
+                                    }
                                 }
+                                
+                                System.out.println("最终thumbnailUrl: " + thumbnailUrl);
+                                System.out.println("==========================================\n");
+                                log.info("角色[{}] 最终thumbnailUrl: {}", character.getDisplayName(), thumbnailUrl);
+                                characterThumbnailCache.put(character.getId(), thumbnailUrl);
                             }
-                            
-                            System.out.println("最终thumbnailUrl: " + thumbnailUrl);
-                            System.out.println("==========================================\n");
-                            log.info("角色[{}] 最终thumbnailUrl: {}", character.getDisplayName(), thumbnailUrl);
                             characters.add(new BoundCharacterVO(
                                     binding.getId(),
                                     character.getId(),
@@ -1196,46 +1367,51 @@ public class ShotServiceImpl implements ShotService {
                 ProjectScene projectScene = projectSceneMapper.selectById(sceneId);
                 if (projectScene != null) {
                     String sceneThumbnailUrl = null;
-                    
-                    System.out.println("========== 开始处理场景 ==========");
-                    System.out.println("场景名称: " + projectScene.getDisplayName());
-                    System.out.println("场景ID: " + projectScene.getId());
-                    System.out.println("库场景ID: " + projectScene.getLibrarySceneId());
-                    System.out.println("项目场景thumbnailUrl: " + projectScene.getThumbnailUrl());
-                    
-                    // 优先使用项目场景的缩略图
-                    if (projectScene.getThumbnailUrl() != null) {
-                        sceneThumbnailUrl = projectScene.getThumbnailUrl();
-                        System.out.println("使用项目场景缩略图: " + sceneThumbnailUrl);
-                        log.debug("场景[{}] 使用项目场景缩略图:{}", projectScene.getDisplayName(), sceneThumbnailUrl);
-                    }
-                    // 其次使用库的缩略图
-                    else if (projectScene.getLibrarySceneId() != null) {
-                        SceneLibrary sceneLibrary = sceneLibraryMapper.selectById(projectScene.getLibrarySceneId());
-                        if (sceneLibrary != null) {
-                            sceneThumbnailUrl = sceneLibrary.getThumbnailUrl();
-                            System.out.println("库缩略图URL: " + sceneThumbnailUrl);
-                            log.debug("场景[{}] 库ID:{}, 库缩略图:{}", projectScene.getDisplayName(), projectScene.getLibrarySceneId(), sceneThumbnailUrl);
+                    boolean cacheHit = sceneThumbnailCache.containsKey(projectScene.getId());
+                    if (cacheHit) {
+                        sceneThumbnailUrl = sceneThumbnailCache.get(projectScene.getId());
+                    } else {
+                        System.out.println("========== 开始处理场景 ==========");
+                        System.out.println("场景名称: " + projectScene.getDisplayName());
+                        System.out.println("场景ID: " + projectScene.getId());
+                        System.out.println("库场景ID: " + projectScene.getLibrarySceneId());
+                        System.out.println("项目场景thumbnailUrl: " + projectScene.getThumbnailUrl());
+                        
+                        // 优先使用项目场景的缩略图
+                        if (projectScene.getThumbnailUrl() != null) {
+                            sceneThumbnailUrl = projectScene.getThumbnailUrl();
+                            System.out.println("使用项目场景缩略图: " + sceneThumbnailUrl);
+                            log.debug("场景[{}] 使用项目场景缩略图:{}", projectScene.getDisplayName(), sceneThumbnailUrl);
                         }
-                    }
-                    
-                    // 如果没有库缩略图，查询场景的资产版本作为缩略图
-                    if (sceneThumbnailUrl == null) {
-                        System.out.println("库缩略图为空，查询场景资产...");
-                        AssetStatusVO assetStatus = getAssetStatus(projectScene.getId(), "PSCENE", "IMAGE");
-                        System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
-                        System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
-                        log.debug("场景[{}] 资产状态: assetId={}, url={}", projectScene.getDisplayName(), 
-                            assetStatus != null ? assetStatus.assetId() : null,
-                            assetStatus != null ? assetStatus.currentUrl() : null);
-                        if (assetStatus != null && assetStatus.currentUrl() != null) {
-                            sceneThumbnailUrl = assetStatus.currentUrl();
+                        // 其次使用库的缩略图
+                        else if (projectScene.getLibrarySceneId() != null) {
+                            SceneLibrary sceneLibrary = sceneLibraryMapper.selectById(projectScene.getLibrarySceneId());
+                            if (sceneLibrary != null) {
+                                sceneThumbnailUrl = sceneLibrary.getThumbnailUrl();
+                                System.out.println("库缩略图URL: " + sceneThumbnailUrl);
+                                log.debug("场景[{}] 库ID:{}, 库缩略图:{}", projectScene.getDisplayName(), projectScene.getLibrarySceneId(), sceneThumbnailUrl);
+                            }
                         }
+                        
+                        // 如果没有库缩略图，查询场景的资产版本作为缩略图
+                        if (sceneThumbnailUrl == null) {
+                            System.out.println("库缩略图为空，查询场景资产...");
+                            AssetStatusVO assetStatus = getAssetStatus(projectScene.getId(), "PSCENE", "IMAGE");
+                            System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
+                            System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
+                            log.debug("场景[{}] 资产状态: assetId={}, url={}", projectScene.getDisplayName(), 
+                                assetStatus != null ? assetStatus.assetId() : null,
+                                assetStatus != null ? assetStatus.currentUrl() : null);
+                            if (assetStatus != null && assetStatus.currentUrl() != null) {
+                                sceneThumbnailUrl = assetStatus.currentUrl();
+                            }
+                        }
+                        
+                        System.out.println("最终thumbnailUrl: " + sceneThumbnailUrl);
+                        System.out.println("==========================================\n");
+                        log.info("场景[{}] 最终thumbnailUrl: {}", projectScene.getDisplayName(), sceneThumbnailUrl);
+                        sceneThumbnailCache.put(projectScene.getId(), sceneThumbnailUrl);
                     }
-                    
-                    System.out.println("最终thumbnailUrl: " + sceneThumbnailUrl);
-                    System.out.println("==========================================\n");
-                    log.info("场景[{}] 最终thumbnailUrl: {}", projectScene.getDisplayName(), sceneThumbnailUrl);
                     scene = new BoundSceneVO(
                             sceneBindingId,
                             projectScene.getId(),
@@ -1271,36 +1447,42 @@ public class ShotServiceImpl implements ShotService {
                         ProjectProp prop = propMap.get(binding.getBindId());
                         if (prop != null) {
                             String thumbnailUrl = null;
-                            
-                            System.out.println("========== 开始处理道具 ==========");
-                            System.out.println("道具名称: " + prop.getDisplayName());
-                            System.out.println("道具ID: " + prop.getId());
-                            System.out.println("库道具ID: " + prop.getLibraryPropId());
-                            
-                            // 优先使用库的缩略图
-                            if (prop.getLibraryPropId() != null) {
-                                thumbnailUrl = propThumbnailMap.get(prop.getLibraryPropId());
-                                System.out.println("库缩略图URL: " + thumbnailUrl);
-                                log.debug("道具[{}] 库ID:{}, 库缩略图:{}", prop.getDisplayName(), prop.getLibraryPropId(), thumbnailUrl);
-                            }
-                            
-                            // 如果没有库缩略图，查询道具的资产版本作为缩略图
-                            if (thumbnailUrl == null) {
-                                System.out.println("库缩略图为空，查询道具资产...");
-                                AssetStatusVO assetStatus = getAssetStatus(prop.getId(), "PPROP", "IMAGE");
-                                System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
-                                System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
-                                log.debug("道具[{}] 资产状态: assetId={}, url={}", prop.getDisplayName(), 
-                                    assetStatus != null ? assetStatus.assetId() : null,
-                                    assetStatus != null ? assetStatus.currentUrl() : null);
-                                if (assetStatus != null && assetStatus.currentUrl() != null) {
-                                    thumbnailUrl = assetStatus.currentUrl();
+
+                            boolean cacheHit = propThumbnailCache.containsKey(prop.getId());
+                            if (cacheHit) {
+                                thumbnailUrl = propThumbnailCache.get(prop.getId());
+                            } else {
+                                System.out.println("========== 开始处理道具 ==========");
+                                System.out.println("道具名称: " + prop.getDisplayName());
+                                System.out.println("道具ID: " + prop.getId());
+                                System.out.println("库道具ID: " + prop.getLibraryPropId());
+                                
+                                // 优先使用库的缩略图
+                                if (prop.getLibraryPropId() != null) {
+                                    thumbnailUrl = propThumbnailMap.get(prop.getLibraryPropId());
+                                    System.out.println("库缩略图URL: " + thumbnailUrl);
+                                    log.debug("道具[{}] 库ID:{}, 库缩略图:{}", prop.getDisplayName(), prop.getLibraryPropId(), thumbnailUrl);
                                 }
+                                
+                                // 如果没有库缩略图，查询道具的资产版本作为缩略图
+                                if (thumbnailUrl == null) {
+                                    System.out.println("库缩略图为空，查询道具资产...");
+                                    AssetStatusVO assetStatus = getAssetStatus(prop.getId(), "PPROP", "IMAGE");
+                                    System.out.println("资产ID: " + (assetStatus != null ? assetStatus.assetId() : "null"));
+                                    System.out.println("资产URL: " + (assetStatus != null ? assetStatus.currentUrl() : "null"));
+                                    log.debug("道具[{}] 资产状态: assetId={}, url={}", prop.getDisplayName(), 
+                                        assetStatus != null ? assetStatus.assetId() : null,
+                                        assetStatus != null ? assetStatus.currentUrl() : null);
+                                    if (assetStatus != null && assetStatus.currentUrl() != null) {
+                                        thumbnailUrl = assetStatus.currentUrl();
+                                    }
+                                }
+                                
+                                System.out.println("最终thumbnailUrl: " + thumbnailUrl);
+                                System.out.println("==========================================\n");
+                                log.info("道具[{}] 最终thumbnailUrl: {}", prop.getDisplayName(), thumbnailUrl);
+                                propThumbnailCache.put(prop.getId(), thumbnailUrl);
                             }
-                            
-                            System.out.println("最终thumbnailUrl: " + thumbnailUrl);
-                            System.out.println("==========================================\n");
-                            log.info("道具[{}] 最终thumbnailUrl: {}", prop.getDisplayName(), thumbnailUrl);
                             props.add(new BoundPropVO(
                                     binding.getId(),
                                     prop.getId(),

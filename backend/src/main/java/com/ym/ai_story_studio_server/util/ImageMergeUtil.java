@@ -28,6 +28,28 @@ public class ImageMergeUtil {
     private static final int PADDING = 20; // 图片之间的间距
     private static final int MAX_HEIGHT = 1024; // 最大高度
     private static final Color BACKGROUND_COLOR = Color.WHITE; // 背景颜色
+    private static final int COMPOSITE_CANVAS_WIDTH = 1280;
+    private static final int COMPOSITE_CELL_HEIGHT = 360;
+    private static final int COMPOSITE_LABEL_HEIGHT = 40;
+    private static final Font COMPOSITE_LABEL_FONT = new Font("SansSerif", Font.BOLD, 24);
+
+    public static class ImageItem {
+        private final String label;
+        private final String imageUrl;
+
+        public ImageItem(String label, String imageUrl) {
+            this.label = label;
+            this.imageUrl = imageUrl;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public String getImageUrl() {
+            return imageUrl;
+        }
+    }
 
     /**
      * 将多个图片URL横向拼接成一张图片
@@ -109,6 +131,104 @@ public class ImageMergeUtil {
     }
 
     /**
+     * 将多张图片按两列多行拼接，并在图片下方附带标签
+     *
+     * @param items 图片与标签信息
+     * @return 拼接后的图片字节数组
+     */
+    public byte[] mergeImagesGridWithLabels(List<ImageItem> items) throws IOException {
+        if (items == null || items.isEmpty()) {
+            throw new IllegalArgumentException("图片列表不能为空");
+        }
+
+        log.info("开始拼接图片（网格），共 {} 张", items.size());
+
+        List<ImageWithLabel> images = new ArrayList<>();
+        for (ImageItem item : items) {
+            if (item == null || item.getImageUrl() == null || item.getImageUrl().isBlank()) {
+                continue;
+            }
+            try {
+                BufferedImage image = downloadImage(item.getImageUrl());
+                if (image != null) {
+                    images.add(new ImageWithLabel(image, item.getLabel()));
+                    log.debug("成功加载图片: {}", item.getImageUrl());
+                }
+            } catch (Exception e) {
+                log.warn("加载图片失败，跳过: {}", item.getImageUrl(), e);
+            }
+        }
+
+        if (images.isEmpty()) {
+            throw new IOException("没有成功加载任何图片");
+        }
+
+        int cols = 2;
+        int cellWidth = (COMPOSITE_CANVAS_WIDTH - PADDING * (cols + 1)) / cols;
+        int rows = (int) Math.ceil(images.size() / (double) cols);
+        int totalHeight = PADDING + rows * (COMPOSITE_CELL_HEIGHT + COMPOSITE_LABEL_HEIGHT + PADDING) + PADDING;
+
+        BufferedImage canvas = new BufferedImage(COMPOSITE_CANVAS_WIDTH, totalHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g2d = canvas.createGraphics();
+
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+
+        g2d.setColor(BACKGROUND_COLOR);
+        g2d.fillRect(0, 0, COMPOSITE_CANVAS_WIDTH, totalHeight);
+
+        g2d.setFont(COMPOSITE_LABEL_FONT);
+        FontMetrics fontMetrics = g2d.getFontMetrics();
+
+        for (int i = 0; i < images.size(); i++) {
+            int row = i / cols;
+            int col = i % cols;
+            int left = PADDING + col * (cellWidth + PADDING);
+            int top = PADDING + row * (COMPOSITE_CELL_HEIGHT + COMPOSITE_LABEL_HEIGHT + PADDING);
+
+            BufferedImage image = images.get(i).image();
+            int[] scaled = scaleToFit(image.getWidth(), image.getHeight(), cellWidth, COMPOSITE_CELL_HEIGHT);
+            int drawWidth = scaled[0];
+            int drawHeight = scaled[1];
+            int imageX = left + (cellWidth - drawWidth) / 2;
+            int imageY = top + (COMPOSITE_CELL_HEIGHT - drawHeight) / 2;
+            g2d.drawImage(image, imageX, imageY, drawWidth, drawHeight, null);
+
+            String label = images.get(i).label();
+            if (label != null && !label.isBlank()) {
+                int labelTop = top + COMPOSITE_CELL_HEIGHT;
+                g2d.setColor(BACKGROUND_COLOR);
+                g2d.fillRect(left, labelTop, cellWidth, COMPOSITE_LABEL_HEIGHT);
+                g2d.setColor(Color.BLACK);
+
+                int textWidth = fontMetrics.stringWidth(label);
+                int textX = left + (cellWidth - textWidth) / 2;
+                int textY = labelTop + (COMPOSITE_LABEL_HEIGHT - fontMetrics.getHeight()) / 2 + fontMetrics.getAscent();
+                g2d.drawString(label, textX, textY);
+            }
+        }
+
+        g2d.dispose();
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(canvas, "PNG", baos);
+        byte[] imageBytes = baos.toByteArray();
+
+        log.info("图片拼接完成（网格），宽度: {}, 高度: {}, 大小: {} KB",
+                COMPOSITE_CANVAS_WIDTH, totalHeight, imageBytes.length / 1024);
+
+        return imageBytes;
+    }
+
+    private int[] scaleToFit(int srcWidth, int srcHeight, int maxWidth, int maxHeight) {
+        double scale = Math.min((double) maxWidth / srcWidth, (double) maxHeight / srcHeight);
+        int width = Math.max(1, (int) Math.round(srcWidth * scale));
+        int height = Math.max(1, (int) Math.round(srcHeight * scale));
+        return new int[] { width, height };
+    }
+
+    /**
      * 从URL下载图片
      */
     private BufferedImage downloadImage(String imageUrl) throws IOException {
@@ -133,6 +253,24 @@ public class ImageMergeUtil {
         g2d.dispose();
 
         return resizedImage;
+    }
+
+    private static class ImageWithLabel {
+        private final BufferedImage image;
+        private final String label;
+
+        private ImageWithLabel(BufferedImage image, String label) {
+            this.image = image;
+            this.label = label;
+        }
+
+        private BufferedImage image() {
+            return image;
+        }
+
+        private String label() {
+            return label;
+        }
     }
 
     /**

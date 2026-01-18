@@ -618,11 +618,28 @@ public class BatchGenerationService {
             throw new BusinessException(ResultCode.ACCESS_DENIED, "分镜不属于该项目");
         }
 
-        // 3. 创建Job任务
+        // 3. 校验并规范化参数
+        String aspectRatio = request.aspectRatio();
+        if (aspectRatio == null || aspectRatio.isBlank()) {
+            aspectRatio = "16:9";
+        }
+        if (!"16:9".equals(aspectRatio) && !"9:16".equals(aspectRatio)) {
+            throw new BusinessException(ResultCode.PARAM_INVALID, "视频画幅仅支持16:9或9:16");
+        }
+
+        Integer duration = request.duration();
+        if (duration == null) {
+            duration = 10;
+        }
+        if (duration != 10 && duration != 15) {
+            throw new BusinessException(ResultCode.PARAM_INVALID, "视频时长仅支持10秒或15秒");
+        }
+
+        // 4. 创建Job任务
         Job job = createBatchJob(userId, projectId, "SINGLE_SHOT_VIDEO", 1);
         log.info("单个分镜视频生成任务已创建 - jobId: {}", job.getId());
 
-        // 4. 发送MQ消息执行视频生成
+        // 5. 发送MQ消息执行视频生成
         // TODO: 根据实际MQ生产者接口调整
         mqProducer.sendSingleShotVideoTask(
                 job.getId(),
@@ -630,8 +647,8 @@ public class BatchGenerationService {
                 projectId,
                 shotId,
                 request.prompt(),
-                request.aspectRatio(),
-                request.duration(),
+                aspectRatio,
+                duration,
                 request.size(),
                 request.referenceImageUrl(),
                 request.scene(),
@@ -641,7 +658,7 @@ public class BatchGenerationService {
 
         log.info("单个分镜视频生成任务已提交 - jobId: {}", job.getId());
 
-        // 5. 返回响应
+        // 6. 返回响应
         return BatchGenerateResponse.pending(job.getId(), 1);
     }
 

@@ -39,13 +39,13 @@ const handleClosePanel = () => {
       leave-from-class="opacity-100 translate-x-0"
       leave-to-class="opacity-0 -translate-x-4"
     >
-      <component
-        v-if="currentPanelComponent"
-        :is="currentPanelComponent"
-        :key="panelManagerStore.panelKey"
-        v-bind="panelManagerStore.panelData"
-        @close="handleClosePanel"
-      />
+      <div v-if="currentPanelComponent" :key="panelManagerStore.panelKey" class="h-full">
+        <component
+          :is="currentPanelComponent"
+          v-bind="panelManagerStore.panelData"
+          @close="handleClosePanel"
+        />
+      </div>
       <div v-else class="flex items-center justify-center h-full">
         <div class="text-center">
           <p class="text-text-tertiary text-sm">未选择面板</p>

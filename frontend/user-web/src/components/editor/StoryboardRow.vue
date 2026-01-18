@@ -244,22 +244,10 @@ const handleDownloadAsset = (url: string) => {
 
 // Combined click handler for AssetCell
 const handleAssetClick = (assetType: 'shot_image' | 'video') => {
-  const asset = assetType === 'shot_image' ? props.shot.shotImage : props.shot.video
-
-  if (asset.status === 'READY') {
-    // Show version history
-    if (assetType === 'shot_image') {
-      handleViewShotImageVersions()
-    } else {
-      handleViewVideoVersions()
-    }
-  } else if (asset.status === 'NONE' || asset.status === 'FAILED') {
-    // Show generate modal
-    if (assetType === 'shot_image') {
-      handleGenerateShotImage()
-    } else {
-      handleGenerateVideo()
-    }
+  if (assetType === 'shot_image') {
+    handleGenerateShotImage()
+  } else {
+    handleGenerateVideo()
   }
 }
 

@@ -125,7 +125,7 @@ public class AiProperties {
         /**
          * API基础URL
          */
-        private String baseUrl = "https://api.vectorengine.ai";
+        private String baseUrl = "https://api.apilingguang.top";
 
         /**
          * API密钥
@@ -259,7 +259,7 @@ public class AiProperties {
         /**
          * 默认模型
          */
-        private String model = "sora-2";
+        private String model = "sora-2-all";
 
         /**
          * 默认画幅比例

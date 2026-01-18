@@ -3,6 +3,7 @@ package com.ym.ai_story_studio_server.dto.ai;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * AI解析剧本结果DTO
@@ -11,7 +12,9 @@ import java.util.List;
  *
  * @param scriptSegments 分镜段落列表
  * @param characters 角色名称列表
- * @param scenes 场景描述列表
+ * @param scenes 场景名称列表
+ * @param characterDescriptions 角色形象提示词映射（角色名 -> 描述）
+ * @param sceneDescriptions 场景提示词映射（场景名 -> 描述）
  *
  * @author Roo (Prometheus)
  * @since 1.0.0
@@ -34,6 +37,16 @@ public class AiParseScriptResult {
     private List<String> scenes;
 
     /**
+     * 角色形象提示词映射（角色名 -> 描述）
+     */
+    private Map<String, String> characterDescriptions;
+
+    /**
+     * 场景提示词映射（场景名 -> 描述）
+     */
+    private Map<String, String> sceneDescriptions;
+
+    /**
      * 默认构造函数
      */
     public AiParseScriptResult() {}
@@ -49,5 +62,23 @@ public class AiParseScriptResult {
         this.scriptSegments = scriptSegments;
         this.characters = characters;
         this.scenes = scenes;
+    }
+
+    /**
+     * 构造函数（包含角色与场景提示词）
+     *
+     * @param scriptSegments 分镜段落列表
+     * @param characters 角色名称列表
+     * @param scenes 场景名称列表
+     * @param characterDescriptions 角色形象提示词映射
+     * @param sceneDescriptions 场景提示词映射
+     */
+    public AiParseScriptResult(List<String> scriptSegments, List<String> characters, List<String> scenes,
+                               Map<String, String> characterDescriptions, Map<String, String> sceneDescriptions) {
+        this.scriptSegments = scriptSegments;
+        this.characters = characters;
+        this.scenes = scenes;
+        this.characterDescriptions = characterDescriptions;
+        this.sceneDescriptions = sceneDescriptions;
     }
 }

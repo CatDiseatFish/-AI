@@ -52,6 +52,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -68,6 +74,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @RequiredArgsConstructor
 public class MQConsumer {
 
+    private static final int DEFAULT_BATCH_CONCURRENCY = 4;
     private final VectorEngineClient vectorEngineClient;
     private final StorageService storageService;
     private final AssetCreationService assetCreationService;
@@ -439,114 +446,142 @@ public class MQConsumer {
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
 
-        for (int i = 0; i < shotIds.size(); i++) {
-            Long shotId = shotIds.get(i);
-            log.info("处理分镜 [{}/{}] - shotId: {}", i + 1, shotIds.size(), shotId);
+        int totalCount = shotIds.size();
+        int concurrency = Math.min(DEFAULT_BATCH_CONCURRENCY, Math.max(1, totalCount));
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        CompletionService<Boolean> completionService = new ExecutorCompletionService<>(executor);
+        AtomicInteger imageIndexCounter = new AtomicInteger(0);
 
-            try {
-                var shot = storyboardShotMapper.selectById(shotId);
-                if (shot == null) {
-                    log.warn("分镜不存在,跳过 - shotId: {}", shotId);
-                    failCount.incrementAndGet();
-                    continue;
-                }
-
-                if ("MISSING".equals(mode)) {
-                    var assetQuery = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.ym.ai_story_studio_server.entity.Asset>();
-                    assetQuery.eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerType, "SHOT")
-                              .eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerId, shotId)
-                              .eq(com.ym.ai_story_studio_server.entity.Asset::getAssetType, "SHOT_IMG")
-                              .eq(com.ym.ai_story_studio_server.entity.Asset::getProjectId, projectId);
-
-                    long imageCount = assetMapper.selectCount(assetQuery);
-                    if (imageCount > 0) {
-                        log.info("MISSING模式 - 分镜已有图片资产,跳过 - shotId: {}", shotId);
-                        successCount.incrementAndGet();
-                        continue;
+        for (Long shotId : shotIds) {
+            completionService.submit(() -> {
+                log.info("处理分镜 - shotId: {}", shotId);
+                try {
+                    var shot = storyboardShotMapper.selectById(shotId);
+                    if (shot == null) {
+                        log.warn("分镜不存在,跳过 - shotId: {}", shotId);
+                        return false;
                     }
-                }
 
-                String scriptText = shot.getScriptText() != null ? shot.getScriptText() :
-                               "为分镜生成图片 - shotId: " + shotId;
-                String prompt = buildShotImagePrompt(scriptText);
+                    if ("MISSING".equals(mode)) {
+                        var assetQuery = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.ym.ai_story_studio_server.entity.Asset>();
+                        assetQuery.eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerType, "SHOT")
+                                  .eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerId, shotId)
+                                  .eq(com.ym.ai_story_studio_server.entity.Asset::getAssetType, "SHOT_IMG")
+                                  .eq(com.ym.ai_story_studio_server.entity.Asset::getProjectId, projectId);
 
-                // 查询分镜绑定的角色图片作为参考图
-                List<String> referenceImageUrls = getBoundCharacterImages(shotId);
-                log.info("分镜绑定的角色图片数量 - shotId: {}, count: {}", shotId, referenceImageUrls.size());
-
-                // 为每个分镜生成多张图片
-                for (int j = 0; j < countPerItem; j++) {
-                    try {
-                        // 1. 调用AI生成图片，传入角色图片作为参考图
-                        log.info("调用AI生成图片 [{}/{}] - shotId: {}, prompt: {}, referenceImages: {}", 
-                                j + 1, countPerItem, shotId, prompt, referenceImageUrls.size());
-                        VectorEngineClient.ImageApiResponse apiResponse = vectorEngineClient.generateImage(
-                                prompt,
-                                finalModel,
-                                finalAspectRatio,
-                                referenceImageUrls  // 传入绑定的角色图片作为参考图
-                        );
-
-                        if (apiResponse == null || apiResponse.data() == null || apiResponse.data().isEmpty()) {
-                            log.error("AI返回空响应 - shotId: {}", shotId);
-                            throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "AI返回空响应");
+                        long imageCount = assetMapper.selectCount(assetQuery);
+                        if (imageCount > 0) {
+                            log.info("MISSING模式 - 分镜已有图片资产,跳过 - shotId: {}", shotId);
+                            return true;
                         }
-
-                        String imageData = apiResponse.data().get(0).url();
-                        log.info("AI生成成功 - shotId: {}, imageData类型: {}", shotId, 
-                                isBase64(imageData) ? "base64" : "url");
-
-                        // 2. 上传到OSS
-                        String ossUrl = processImageAndUploadToOss(imageData, jobId, j);
-                        log.info("上传OSS成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
-
-                        // 3. 保存到Asset表
-                        assetCreationService.createAssetWithVersion(
-                                projectId,
-                                "SHOT",
-                                shotId,
-                                "SHOT_IMG",
-                                ossUrl,
-                                prompt,
-                                finalModel,
-                                finalAspectRatio,
-                                userId
-                        );
-                        log.info("Asset保存成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
-
-                        // 4. 扣积分（每张图片扣一次）
-                        Map<String, Object> metaData = new HashMap<>();
-                        metaData.put("model", finalModel);
-                        metaData.put("aspectRatio", finalAspectRatio);
-                        metaData.put("imageUrl", ossUrl);
-                        metaData.put("shotId", shotId);
-
-                        chargingService.charge(
-                                ChargingService.ChargingRequest.builder()
-                                        .jobId(jobId)
-                                        .bizType("IMAGE_GENERATION")
-                                        .modelCode(finalModel)
-                                        .quantity(1)
-                                        .metaData(metaData)
-                                        .build()
-                        );
-                        log.info("积分扣除成功 - shotId: {}", shotId);
-
-                    } catch (Exception e) {
-                        log.error("生成单张图片失败 [{}/{}] - shotId: {}", j + 1, countPerItem, shotId, e);
-                        // 单张失败不影响其他张
                     }
+
+                    String scriptText = shot.getScriptText() != null ? shot.getScriptText() :
+                                   "为分镜生成图片 - shotId: " + shotId;
+                    String prompt = buildShotImagePrompt(scriptText);
+
+                    // 查询分镜绑定的角色图片作为参考图
+                    List<String> referenceImageUrls = getBoundCharacterImages(shotId);
+                    log.info("分镜绑定的角色图片数量 - shotId: {}, count: {}", shotId, referenceImageUrls.size());
+
+                    // 为每个分镜生成多张图片
+                    for (int j = 0; j < countPerItem; j++) {
+                        try {
+                            // 1. 调用AI生成图片，传入角色图片作为参考图
+                            log.info("调用AI生成图片 [{}/{}] - shotId: {}, prompt: {}, referenceImages: {}", 
+                                    j + 1, countPerItem, shotId, prompt, referenceImageUrls.size());
+                            VectorEngineClient.ImageApiResponse apiResponse = vectorEngineClient.generateImage(
+                                    prompt,
+                                    finalModel,
+                                    finalAspectRatio,
+                                    referenceImageUrls  // 传入绑定的角色图片作为参考图
+                            );
+
+                            if (apiResponse == null || apiResponse.data() == null || apiResponse.data().isEmpty()) {
+                                log.error("AI返回空响应 - shotId: {}", shotId);
+                                throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "AI返回空响应");
+                            }
+
+                            String imageData = apiResponse.data().get(0).url();
+                            log.info("AI生成成功 - shotId: {}, imageData类型: {}", shotId, 
+                                    isBase64(imageData) ? "base64" : "url");
+
+                            // 2. 上传到OSS
+                            int imageIndex = imageIndexCounter.getAndIncrement();
+                            String ossUrl = processImageAndUploadToOss(imageData, jobId, imageIndex);
+                            log.info("上传OSS成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+                            // 3. 保存到Asset表
+                            assetCreationService.createAssetWithVersion(
+                                    projectId,
+                                    "SHOT",
+                                    shotId,
+                                    "SHOT_IMG",
+                                    ossUrl,
+                                    prompt,
+                                    finalModel,
+                                    finalAspectRatio,
+                                    userId
+                            );
+                            log.info("Asset保存成功 - shotId: {}, ossUrl: {}", shotId, ossUrl);
+
+                            // 4. 扣积分（每张图片扣一次）
+                            Map<String, Object> metaData = new HashMap<>();
+                            metaData.put("model", finalModel);
+                            metaData.put("aspectRatio", finalAspectRatio);
+                            metaData.put("imageUrl", ossUrl);
+                            metaData.put("shotId", shotId);
+
+                            chargingService.charge(
+                                    ChargingService.ChargingRequest.builder()
+                                            .jobId(jobId)
+                                            .bizType("IMAGE_GENERATION")
+                                            .modelCode(finalModel)
+                                            .quantity(1)
+                                            .metaData(metaData)
+                                            .build()
+                            );
+                            log.info("积分扣除成功 - shotId: {}", shotId);
+
+                        } catch (Exception e) {
+                            log.error("生成单张图片失败 [{}/{}] - shotId: {}", j + 1, countPerItem, shotId, e);
+                            // 单张失败不影响其他张
+                        }
+                    }
+
+                    log.info("分镜图生成完成 - shotId: {}, 数量: {}", shotId, countPerItem);
+                    return true;
+
+                } catch (Exception e) {
+                    log.error("分镜图生成失败 - shotId: {}", shotId, e);
+                    return false;
                 }
+            });
+        }
 
-                successCount.incrementAndGet();
-                log.info("分镜图生成完成 - shotId: {}, 数量: {}", shotId, countPerItem);
-
+        int completedCount = 0;
+        for (int i = 0; i < totalCount; i++) {
+            try {
+                Future<Boolean> future = completionService.take();
+                Boolean ok = future.get();
+                if (Boolean.TRUE.equals(ok)) {
+                    successCount.incrementAndGet();
+                } else {
+                    failCount.incrementAndGet();
+                }
             } catch (Exception e) {
                 failCount.incrementAndGet();
-                log.error("分镜图生成失败 - shotId: {}", shotId, e);
+                log.error("分镜图生成任务执行失败", e);
             }
+            completedCount++;
+            updateJobProgress(jobId, completedCount, totalCount);
+        }
 
-            updateJobProgress(jobId, i + 1, shotIds.size());
+        executor.shutdown();
+        try {
+            executor.awaitTermination(30, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
         log.info("批量生成分镜图完成 - 成功: {}, 失败: {}", successCount.get(), failCount.get());
@@ -740,61 +775,64 @@ public class MQConsumer {
     }
 
     private String buildMergedReferenceImageUrl(String referenceImageUrl, SingleShotVideoMessage msg) {
-        List<String> imageUrls = new ArrayList<>();
+        java.util.LinkedHashMap<String, ImageMergeUtil.ImageItem> itemsByUrl = new java.util.LinkedHashMap<>();
 
         if (isValidReferenceUrl(referenceImageUrl)) {
-            imageUrls.add(referenceImageUrl);
+            itemsByUrl.put(referenceImageUrl, new ImageMergeUtil.ImageItem("镜头参考", referenceImageUrl));
         }
 
         if (msg.getScene() != null) {
-            if (isValidReferenceUrl(msg.getScene().thumbnailUrl())) {
-                imageUrls.add(msg.getScene().thumbnailUrl());
-            } else {
-                String sceneThumbnail = resolveSceneThumbnail(msg.getScene().id());
-                if (isValidReferenceUrl(sceneThumbnail)) {
-                    imageUrls.add(sceneThumbnail);
-                }
+            String sceneUrl = isValidReferenceUrl(msg.getScene().thumbnailUrl())
+                    ? msg.getScene().thumbnailUrl()
+                    : resolveSceneThumbnail(msg.getScene().id());
+            if (isValidReferenceUrl(sceneUrl)) {
+                String sceneLabel = msg.getScene().name() != null && !msg.getScene().name().isBlank()
+                        ? msg.getScene().name() + " 场景参考"
+                        : "场景参考";
+                itemsByUrl.put(sceneUrl, new ImageMergeUtil.ImageItem(sceneLabel, sceneUrl));
             }
         }
 
         if (msg.getCharacters() != null) {
             for (var character : msg.getCharacters()) {
-                if (isValidReferenceUrl(character.thumbnailUrl())) {
-                    imageUrls.add(character.thumbnailUrl());
-                    continue;
-                }
-                String characterThumbnail = resolveCharacterThumbnail(character.id());
-                if (isValidReferenceUrl(characterThumbnail)) {
-                    imageUrls.add(characterThumbnail);
+                String characterUrl = isValidReferenceUrl(character.thumbnailUrl())
+                        ? character.thumbnailUrl()
+                        : resolveCharacterThumbnail(character.id());
+                if (isValidReferenceUrl(characterUrl)) {
+                    String label = character.name() != null && !character.name().isBlank()
+                            ? character.name() + " 人物参考"
+                            : "人物参考";
+                    itemsByUrl.put(characterUrl, new ImageMergeUtil.ImageItem(label, characterUrl));
                 }
             }
         }
 
         if (msg.getProps() != null) {
             for (var prop : msg.getProps()) {
-                if (isValidReferenceUrl(prop.thumbnailUrl())) {
-                    imageUrls.add(prop.thumbnailUrl());
-                    continue;
-                }
-                String propThumbnail = resolvePropThumbnail(prop.id());
-                if (isValidReferenceUrl(propThumbnail)) {
-                    imageUrls.add(propThumbnail);
+                String propUrl = isValidReferenceUrl(prop.thumbnailUrl())
+                        ? prop.thumbnailUrl()
+                        : resolvePropThumbnail(prop.id());
+                if (isValidReferenceUrl(propUrl)) {
+                    String label = prop.name() != null && !prop.name().isBlank()
+                            ? prop.name() + " 道具参考"
+                            : "道具参考";
+                    itemsByUrl.put(propUrl, new ImageMergeUtil.ImageItem(label, propUrl));
                 }
             }
         }
 
-        imageUrls = imageUrls.stream().distinct().toList();
+        List<ImageMergeUtil.ImageItem> items = new ArrayList<>(itemsByUrl.values());
 
-        if (imageUrls.isEmpty()) {
+        if (items.isEmpty()) {
             return referenceImageUrl;
         }
 
-        if (imageUrls.size() == 1) {
-            return imageUrls.get(0);
+        if (items.size() == 1) {
+            return items.get(0).getImageUrl();
         }
 
         try {
-            byte[] mergedImageBytes = imageMergeUtil.mergeImagesHorizontally(imageUrls);
+            byte[] mergedImageBytes = imageMergeUtil.mergeImagesGridWithLabels(items);
             String mergedUrl = storageService.uploadImageBytes(
                     mergedImageBytes,
                     "merged_video_ref_" + System.currentTimeMillis() + ".png"
@@ -803,7 +841,7 @@ public class MQConsumer {
             return mergedUrl;
         } catch (Exception e) {
             log.warn("参考图拼接失败，回退到首张参考图: {}", e.getMessage());
-            return imageUrls.get(0);
+            return items.get(0).getImageUrl();
         }
     }
 
@@ -881,18 +919,21 @@ public class MQConsumer {
         AtomicInteger failCount = new AtomicInteger(0);
         
         // 收集所有生成的图片URL（用于Job的allImageUrls）
-        List<String> allGeneratedImageUrls = new java.util.ArrayList<>();
+        List<String> allGeneratedImageUrls = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        int totalCount = characterIds.size();
+        int concurrency = Math.min(DEFAULT_BATCH_CONCURRENCY, Math.max(1, totalCount));
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        CompletionService<Boolean> completionService = new ExecutorCompletionService<>(executor);
+        AtomicInteger imageIndexCounter = new AtomicInteger(0);
 
-        for (int i = 0; i < characterIds.size(); i++) {
-            Long projectCharacterId = characterIds.get(i);
-
-            try {
+        for (Long projectCharacterId : characterIds) {
+            completionService.submit(() -> {
+                try {
                 // 1. 查询项目角色
                 ProjectCharacter projectCharacter = projectCharacterMapper.selectById(projectCharacterId);
                 if (projectCharacter == null) {
                     log.warn("项目角色不存在 - projectCharacterId: {}", projectCharacterId);
-                    failCount.incrementAndGet();
-                    continue;
+                    return false;
                 }
 
                 // 2. 查询角色库中的角色（可能为NULL，支持自定义角色）
@@ -910,8 +951,7 @@ public class MQConsumer {
                         projectCharacter.getThumbnailUrl() : character.getThumbnailUrl();
                 if ("MISSING".equals(msg.getMode()) && existingThumbnail != null && !existingThumbnail.isEmpty()) {
                     log.info("MISSING模式 - 角色已有图片,跳过 - projectCharacterId: {}", projectCharacterId);
-                    successCount.incrementAndGet();
-                    continue;
+                    return true;
                 }
 
                 // 4. 构建提示词：基于AI分析的描述生成角色立绘
@@ -935,11 +975,11 @@ public class MQConsumer {
                 String prompt;
                 if (description != null && !description.trim().isEmpty()) {
                     // 有AI分析描述：直接使用描述作为主要提示词
-                    prompt = String.format("角色立绘，%s，2D动漫风格，高质量，精细绘制，全身像，正面站立，面向镜头",
+                    prompt = String.format("角色立绘，%s，请根据角色形象提示词在同一画布下画出人角色的三视全身图和上半身特写图，三视全身图在左，上半身特写图在右，要求必须纯白色背景，人物比例协调，禁止出现任何字，风格为二次元动漫风格，4K，超清",
                             description.trim());
                 } else {
                     // 无描述：使用角色名称
-                    prompt = String.format("角色立绘，%s，2D动漫风格，高质量，精细绘制，全身像，正面站立",
+                    prompt = String.format("角色立绘，%s，请根据角色形象提示词在同一画布下画出人角色的三视全身图和上半身特写图，三视全身图在左，上半身特写图在右，要求必须纯白色背景，人物比例协调，禁止出现任何字，风格为二次元动漫风格，4K，超清",
                             characterName);
                 }
 
@@ -966,13 +1006,14 @@ public class MQConsumer {
 
                     // 7. 处理所有图片并上传到OSS
                     List<String> ossUrls = new java.util.ArrayList<>();
+                    int baseIndex = imageIndexCounter.getAndAdd(Math.max(allResults.size(), 1));
                     for (int j = 0; j < allResults.size(); j++) {
                         String imageData = allResults.get(j).url();
                         if (imageData == null) {
                             log.warn("第 {} 张图片数据为空,跳过", j + 1);
                             continue;
                         }
-                        String ossUrl = processImageAndUploadToOss(imageData, jobId, i * 10 + j);
+                        String ossUrl = processImageAndUploadToOss(imageData, jobId, baseIndex + j);
                         ossUrls.add(ossUrl);
                         allGeneratedImageUrls.add(ossUrl);
                         log.info("上传图片 [{}/{}] 到OSS成功 - ossUrl: {}", j + 1, allResults.size(), ossUrl);
@@ -1018,18 +1059,40 @@ public class MQConsumer {
                                     .build()
                     );
 
-                    successCount.incrementAndGet();
-
+                    return true;
                 } finally {
                     UserContext.clear();
                 }
+            }  catch (Exception e) {
+                log.error("角色图片生成失败 - projectCharacterId: {}", projectCharacterId, e);
+                return false;
+            }
+        });
+        }
 
+        int completedCount = 0;
+        for (int i = 0; i < totalCount; i++) {
+            try {
+                Future<Boolean> future = completionService.take();
+                Boolean ok = future.get();
+                if (Boolean.TRUE.equals(ok)) {
+                    successCount.incrementAndGet();
+                } else {
+                    failCount.incrementAndGet();
+                }
             } catch (Exception e) {
                 failCount.incrementAndGet();
-                log.error("角色图片生成失败 - projectCharacterId: {}", projectCharacterId, e);
+                log.error("角色图片生成任务执行失败", e);
             }
+            completedCount++;
+            updateJobProgress(jobId, completedCount, totalCount);
+        }
 
-            updateJobProgress(jobId, i + 1, characterIds.size());
+        executor.shutdown();
+        try {
+            executor.awaitTermination(30, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
         log.info("批量生成角色画像完成 - 成功: {}, 失败: {}, 总图片数: {}", 
@@ -1057,16 +1120,20 @@ public class MQConsumer {
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
 
-        for (int i = 0; i < sceneIds.size(); i++) {
-            Long projectSceneId = sceneIds.get(i);
+        int totalCount = sceneIds.size();
+        int concurrency = Math.min(DEFAULT_BATCH_CONCURRENCY, Math.max(1, totalCount));
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        CompletionService<Boolean> completionService = new ExecutorCompletionService<>(executor);
+        AtomicInteger imageIndexCounter = new AtomicInteger(0);
 
-            try {
+        for (Long projectSceneId : sceneIds) {
+            completionService.submit(() -> {
+                try {
                 // 1. 查询项目场景
                 ProjectScene projectScene = projectSceneMapper.selectById(projectSceneId);
                 if (projectScene == null) {
                     log.warn("项目场景不存在 - projectSceneId: {}", projectSceneId);
-                    failCount.incrementAndGet();
-                    continue;
+                    return false;
                 }
 
                 // 2. 查询场景库中的场景（可能为null，自定义场景不关联场景库）
@@ -1095,8 +1162,7 @@ public class MQConsumer {
                 }
                 if ("MISSING".equals(msg.getMode()) && existingThumbnail != null) {
                     log.info("MISSING模式 - 场景已有图片,跳过 - projectSceneId: {}", projectSceneId);
-                    successCount.incrementAndGet();
-                    continue;
+                    return true;
                 }
 
                 // 5. 构建提示词：使用场景描述生成场景图
@@ -1129,7 +1195,8 @@ public class MQConsumer {
                     }
 
                     // 8. 上传到OSS
-                    String ossUrl = processImageAndUploadToOss(imageData, jobId, i);
+                    int imageIndex = imageIndexCounter.getAndIncrement();
+                    String ossUrl = processImageAndUploadToOss(imageData, jobId, imageIndex);
 
                     // 9. 保存缩略图URL（优先保存到项目场景）
                     projectScene.setThumbnailUrl(ossUrl);
@@ -1158,18 +1225,40 @@ public class MQConsumer {
                                     .build()
                     );
 
-                    successCount.incrementAndGet();
-
+                    return true;
                 } finally {
                     UserContext.clear();
                 }
+            } catch (Exception e) {
+                log.error("场景图片生成失败 - projectSceneId: {}", projectSceneId, e);
+                return false;
+            }
+        });
+        }
 
+        int completedCount = 0;
+        for (int i = 0; i < totalCount; i++) {
+            try {
+                Future<Boolean> future = completionService.take();
+                Boolean ok = future.get();
+                if (Boolean.TRUE.equals(ok)) {
+                    successCount.incrementAndGet();
+                } else {
+                    failCount.incrementAndGet();
+                }
             } catch (Exception e) {
                 failCount.incrementAndGet();
-                log.error("场景图片生成失败 - projectSceneId: {}", projectSceneId, e);
+                log.error("场景图片生成任务执行失败", e);
             }
+            completedCount++;
+            updateJobProgress(jobId, completedCount, totalCount);
+        }
 
-            updateJobProgress(jobId, i + 1, sceneIds.size());
+        executor.shutdown();
+        try {
+            executor.awaitTermination(30, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
         log.info("批量生成场景画像完成 - 成功: {}, 失败: {}", successCount.get(), failCount.get());
@@ -1195,33 +1284,34 @@ public class MQConsumer {
         AtomicInteger failCount = new AtomicInteger(0);
         
         // 收集所有生成的图片URL（用于Job的allImageUrls）
-        List<String> allGeneratedImageUrls = new java.util.ArrayList<>();
+        List<String> allGeneratedImageUrls = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        int totalCount = propIds.size();
+        int concurrency = Math.min(DEFAULT_BATCH_CONCURRENCY, Math.max(1, totalCount));
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        CompletionService<Boolean> completionService = new ExecutorCompletionService<>(executor);
+        AtomicInteger imageIndexCounter = new AtomicInteger(0);
 
-        for (int i = 0; i < propIds.size(); i++) {
-            Long projectPropId = propIds.get(i);
-
-            try {
+        for (Long projectPropId : propIds) {
+            completionService.submit(() -> {
+                try {
                 // 1. 查询项目道具
                 ProjectProp projectProp = projectPropMapper.selectById(projectPropId);
                 if (projectProp == null) {
                     log.warn("项目道具不存在 - projectPropId: {}", projectPropId);
-                    failCount.incrementAndGet();
-                    continue;
+                    return false;
                 }
 
                 // 2. 查询道具库中的道具
                 PropLibrary prop = propLibraryMapper.selectById(projectProp.getLibraryPropId());
                 if (prop == null) {
                     log.warn("道具库道具不存在 - libraryPropId: {}", projectProp.getLibraryPropId());
-                    failCount.incrementAndGet();
-                    continue;
+                    return false;
                 }
 
                 // 3. MISSING模式：检查是否已有图片
                 if ("MISSING".equals(msg.getMode()) && prop.getThumbnailUrl() != null) {
                     log.info("MISSING模式 - 道具已有图片,跳过 - propId: {}", prop.getId());
-                    successCount.incrementAndGet();
-                    continue;
+                    return true;
                 }
 
                 // 4. 构建提示词：使用道具描述生成道具图
@@ -1255,13 +1345,14 @@ public class MQConsumer {
 
                     // 7. 处理所有图片并上传到OSS
                     List<String> ossUrls = new java.util.ArrayList<>();
+                    int baseIndex = imageIndexCounter.getAndAdd(Math.max(allResults.size(), 1));
                     for (int j = 0; j < allResults.size(); j++) {
                         String imageData = allResults.get(j).url();
                         if (imageData == null) {
                             log.warn("第 {} 张图片数据为空,跳过", j + 1);
                             continue;
                         }
-                        String ossUrl = processImageAndUploadToOss(imageData, jobId, i * 10 + j);
+                        String ossUrl = processImageAndUploadToOss(imageData, jobId, baseIndex + j);
                         ossUrls.add(ossUrl);
                         allGeneratedImageUrls.add(ossUrl);
                         log.info("上传图片 [{}/{}] 到OSS成功 - ossUrl: {}", j + 1, allResults.size(), ossUrl);
@@ -1297,18 +1388,40 @@ public class MQConsumer {
                                     .build()
                     );
 
-                    successCount.incrementAndGet();
-
+                    return true;
                 } finally {
                     UserContext.clear();
                 }
+            } catch (Exception e) {
+                log.error("道具图片生成失败 - projectPropId: {}", projectPropId, e);
+                return false;
+            }
+        });
+        }
 
+        int completedCount = 0;
+        for (int i = 0; i < totalCount; i++) {
+            try {
+                Future<Boolean> future = completionService.take();
+                Boolean ok = future.get();
+                if (Boolean.TRUE.equals(ok)) {
+                    successCount.incrementAndGet();
+                } else {
+                    failCount.incrementAndGet();
+                }
             } catch (Exception e) {
                 failCount.incrementAndGet();
-                log.error("道具图片生成失败 - projectPropId: {}", projectPropId, e);
+                log.error("道具图片生成任务执行失败", e);
             }
+            completedCount++;
+            updateJobProgress(jobId, completedCount, totalCount);
+        }
 
-            updateJobProgress(jobId, i + 1, propIds.size());
+        executor.shutdown();
+        try {
+            executor.awaitTermination(30, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
         log.info("批量生成道具画像完成 - 成功: {}, 失败: {}, 总图片数: {}", 

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 
 export type PanelType = 'default' | 'asset-edit' | 'history' | 'shot-image-generate' | 'video-generate' | null
 
@@ -12,17 +12,20 @@ export const usePanelManagerStore = defineStore('panelManager', () => {
   const panelData = ref<PanelData>({})
   const panelKey = ref(0) // 添加key强制刷新组件
 
-  const openPanel = (type: PanelType, data?: PanelData) => {
-    const isSamePanel = currentPanelType.value === type
+  const openPanel = async (type: PanelType, data?: PanelData) => {
+    const payload = { ...(data || {}) }
+    // 先重置，避免同类型面板不刷新
+    currentPanelType.value = null
+    panelData.value = {}
+    panelKey.value++
+
+    await nextTick()
+
     currentPanelType.value = type
-    panelData.value = data || {}
+    panelData.value = payload
+    panelKey.value++
 
-    // 如果是相同面板，强制刷新组件以更新props
-    if (isSamePanel) {
-      panelKey.value++
-    }
-
-    console.log('[PanelManager] Opening panel:', type, data, 'key:', panelKey.value)
+    console.log('[PanelManager] Opening panel:', type, payload, 'key:', panelKey.value)
   }
 
   const closePanel = () => {

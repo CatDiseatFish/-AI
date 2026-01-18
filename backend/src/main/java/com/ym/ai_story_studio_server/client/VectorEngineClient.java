@@ -1,5 +1,6 @@
 package com.ym.ai_story_studio_server.client;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ym.ai_story_studio_server.common.ResultCode;
 import com.ym.ai_story_studio_server.config.AiProperties;
@@ -19,6 +20,7 @@ import org.springframework.core.io.ByteArrayResource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.awt.Graphics2D;
@@ -678,75 +680,47 @@ public class VectorEngineClient {
             String size,
             String referenceImageUrl
     ) {
+        String effectiveModel = normalizeVideoModel(model);
         log.info("调用视频生成API - 模型: {}, 画幅: {}, 时长: {}, 是否有参考图: {}",
-                model, aspectRatio, duration, referenceImageUrl != null);
+                effectiveModel, aspectRatio, duration, referenceImageUrl != null);
 
         if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
-            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "视频生成需要提供参考图(input_reference)");
+            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "视频生成需要提供参考图(images)");
         }
 
-        MultiValueMap<String, Object> requestBody = new LinkedMultiValueMap<>();
-        requestBody.add("model", model);
-        requestBody.add("prompt", prompt);
-        requestBody.add("seconds", String.valueOf(normalizeVideoSeconds(duration)));
-        String targetSize = size != null && !size.isBlank()
-                ? size
-                : mapAspectRatioToOpenAiVideoSize(aspectRatio);
-        requestBody.add("size", targetSize);
+        String targetSize = mapSizeToVideoCreateSize(size, aspectRatio);
+        String targetOrientation = mapToVideoCreateOrientation(aspectRatio, size);
+        int targetDuration = duration != null ? duration : 10;
 
-        byte[] imageBytes = RestClient.create()
-                .get()
-                .uri(referenceImageUrl)
-                .retrieve()
-                .body(byte[].class);
-        if (imageBytes == null || imageBytes.length == 0) {
-            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "参考图下载失败或为空");
-        }
-
-        String referenceMimeType = resolveReferenceMimeType(referenceImageUrl);
-        if (referenceMimeType.startsWith("image/")) {
-            imageBytes = resizeReferenceImage(imageBytes, targetSize);
-            referenceMimeType = MediaType.IMAGE_PNG_VALUE;
-        }
-
-        final byte[] finalImageBytes = imageBytes;
-        final String finalMimeType = referenceMimeType;
-
-        log.debug("视频生成请求体 - model: {}, size: {}, seconds: {}",
-                model, targetSize, duration);
+        log.debug("视频生成请求体 - model: {}, size: {}, orientation: {}, duration: {}",
+                effectiveModel, targetSize, targetOrientation, targetDuration);
 
         // 带重试的API调用(处理GOAWAY、负载饱和等临时错误)
         Exception lastException = null;
         for (int attempt = 1; attempt <= MAX_VIDEO_API_RETRIES; attempt++) {
             try {
-                // 每次重试需要重新构建请求体(因为Resource可能被消费)
-                MultiValueMap<String, Object> retryRequestBody = new LinkedMultiValueMap<>();
-                retryRequestBody.add("model", model);
-                retryRequestBody.add("prompt", prompt);
-                retryRequestBody.add("seconds", String.valueOf(normalizeVideoSeconds(duration)));
-                retryRequestBody.add("size", targetSize);
-                
-                ByteArrayResource imageResource = new ByteArrayResource(finalImageBytes) {
-                    @Override
-                    public String getFilename() {
-                        return "input_reference.png";
-                    }
-                };
-                HttpHeaders partHeaders = new HttpHeaders();
-                partHeaders.setContentType(MediaType.parseMediaType(finalMimeType));
-                retryRequestBody.add("input_reference", new HttpEntity<>(imageResource, partHeaders));
+                // 每次重试需要重新构建请求体(因为资源可能被消费)
+                Map<String, Object> retryRequestBody = new HashMap<>();
+                retryRequestBody.put("images", List.of(referenceImageUrl));
+                retryRequestBody.put("model", effectiveModel);
+                retryRequestBody.put("orientation", targetOrientation);
+                retryRequestBody.put("prompt", prompt);
+                retryRequestBody.put("size", targetSize);
+                retryRequestBody.put("duration", targetDuration);
+                retryRequestBody.put("watermark", false);
 
                 // 调用向量引擎视频创建端点
                 String rawResponse = restClient.post()
-                        .uri("/v1/videos")
-                        .contentType(MediaType.MULTIPART_FORM_DATA)
+                        .uri("/v1/video/create")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
                         .body(retryRequestBody)
                         .retrieve()
                         .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
                             String errorBody = new String(httpResponse.getBody().readAllBytes());
                             log.error("视频生成API错误 - 状态码: {}, 响应体: {}",
                                     httpResponse.getStatusCode(), errorBody);
-                            
+
                             // 解析错误响应,给出更友好的提示
                             String friendlyMessage = parseVideoErrorMessage(errorBody);
                             throw new BusinessException(ResultCode.AI_SERVICE_ERROR, friendlyMessage);
@@ -754,11 +728,11 @@ public class VectorEngineClient {
                         .body(String.class);
 
                 log.debug("视频生成API原始响应: {}", rawResponse);
-                
+
                 // 解析响应
                 ObjectMapper objectMapper = new ObjectMapper();
                 VideoApiResponse response = objectMapper.readValue(rawResponse, VideoApiResponse.class);
-                
+
                 // 检查是否有错误状态
                 if ("error".equals(response.status())) {
                     String friendlyMessage = parseVideoErrorMessage(rawResponse);
@@ -767,7 +741,6 @@ public class VectorEngineClient {
 
                 log.info("视频生成任务已创建 - taskId: {}, 尝试次数: {}", response.id(), attempt);
                 return response;
-
             } catch (BusinessException e) {
                 // 检查是否为可重试的错误
                 if (isRetryableError(e) && attempt < MAX_VIDEO_API_RETRIES) {
@@ -978,6 +951,7 @@ public class VectorEngineClient {
      */
     @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     public record VideoApiResponse(
+            @JsonAlias({ "task_id", "taskId" })
             String id,         // API返回字段名为"id"而非"taskId"
             String status,
             String model,
@@ -1135,7 +1109,7 @@ public class VectorEngineClient {
     ) {
         public record Candidate(Content content) {}
         public record Content(List<Part> parts) {}
-        public record Part(InlineData inlineData) {}
+        public record Part(InlineData inlineData, String text) {}
         public record InlineData(String mimeType, String data) {}
 
         /**
@@ -1149,19 +1123,27 @@ public class VectorEngineClient {
                         "Gemini原生格式响应的candidates为空");
             }
 
-            Candidate candidate = candidates.get(0);
-            if (candidate.content == null || candidate.content.parts == null || candidate.content.parts.isEmpty()) {
-                throw new BusinessException(ResultCode.AI_SERVICE_ERROR,
-                        "Gemini原生格式响应的content.parts为空");
+            String firstText = null;
+            for (Candidate candidate : candidates) {
+                if (candidate == null || candidate.content == null || candidate.content.parts == null) {
+                    continue;
+                }
+                for (Part part : candidate.content.parts) {
+                    if (part == null) {
+                        continue;
+                    }
+                    if (part.inlineData != null && part.inlineData.data != null && !part.inlineData.data.isBlank()) {
+                        return part.inlineData.data;
+                    }
+                    if (firstText == null && part.text != null && !part.text.isBlank()) {
+                        firstText = part.text;
+                    }
+                }
             }
 
-            Part part = candidate.content.parts.get(0);
-            if (part.inlineData == null || part.inlineData.data == null) {
-                throw new BusinessException(ResultCode.AI_SERVICE_ERROR,
-                        "Gemini原生格式响应的inlineData.data为空");
-            }
-
-            return part.inlineData.data;
+            String detail = firstText != null ? ("Gemini返回文本: " + firstText) : "未返回图片inlineData";
+            throw new BusinessException(ResultCode.AI_SERVICE_ERROR,
+                    "Gemini原生格式响应的inlineData.data为空, " + detail);
         }
     }
 
@@ -1259,6 +1241,41 @@ public class VectorEngineClient {
             default -> "1280x720";
         };
     }
+
+    private String normalizeVideoModel(String model) {
+        if (model == null || model.isBlank()) {
+            return "sora-2-all";
+        }
+        if ("sora-2".equalsIgnoreCase(model)) {
+            return "sora-2-all";
+        }
+        return model;
+    }
+
+    private String mapSizeToVideoCreateSize(String size, String aspectRatio) {
+        if (size == null || size.isBlank()) {
+            return "large";
+        }
+        String normalized = size.trim().toLowerCase();
+        if ("small".equals(normalized) || "large".equals(normalized)) {
+            return normalized;
+        }
+        int[] parsed = parseSize(size);
+        int max = Math.max(parsed[0], parsed[1]);
+        return max >= 1024 ? "large" : "small";
+    }
+
+    private String mapToVideoCreateOrientation(String aspectRatio, String size) {
+        if (size != null && size.contains("x")) {
+            int[] parsed = parseSize(size);
+            return parsed[1] > parsed[0] ? "portrait" : "landscape";
+        }
+        if ("9:16".equals(aspectRatio)) {
+            return "portrait";
+        }
+        return "landscape";
+    }
+
 
     /**
      * 将画幅比例映射为gpt-image-1的size参数

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { shotApi, characterApi, sceneApi, generationApi, assetApi, propApi } from '@/api/apis'
+import { jobApi } from '@/api/job'
 import type {
   StoryboardShotVO,
   ProjectCharacterVO,
@@ -29,6 +30,21 @@ interface EditorState {
   maxHistorySize: number
   // 本地图片历史记录（按资产类型+ID分组存储，如 'character_123' 或 'scene_456'）
   localImageHistory: Record<string, { id: number; url: string; prompt: string | null; versionNo: number; createdAt: string }[]>
+  // 生成中的资源（避免重复点击）
+  generatingAssets: {
+    character: Set<number>
+    scene: Set<number>
+    prop: Set<number>
+    shot: Set<number>
+    video: Set<number>
+  }
+  batchGenerating: {
+    characters: boolean
+    scenes: boolean
+    props: boolean
+    shots: boolean
+    videos: boolean
+  }
 }
 
 export const useEditorStore = defineStore('editor', {
@@ -50,6 +66,20 @@ export const useEditorStore = defineStore('editor', {
     maxHistorySize: 20,
     // 本地图片历史记录
     localImageHistory: {},
+    generatingAssets: {
+      character: new Set(),
+      scene: new Set(),
+      prop: new Set(),
+      shot: new Set(),
+      video: new Set(),
+    },
+    batchGenerating: {
+      characters: false,
+      scenes: false,
+      props: false,
+      shots: false,
+      videos: false,
+    },
   }),
 
   getters: {
@@ -66,6 +96,40 @@ export const useEditorStore = defineStore('editor', {
   },
 
   actions: {
+    isAssetGenerating(type: 'character' | 'scene' | 'prop' | 'shot' | 'video', id: number) {
+      return this.generatingAssets[type].has(id)
+    },
+
+    markAssetGenerating(type: 'character' | 'scene' | 'prop' | 'shot' | 'video', id: number) {
+      this.generatingAssets[type].add(id)
+    },
+
+    clearAssetGenerating(type: 'character' | 'scene' | 'prop' | 'shot' | 'video', id: number) {
+      this.generatingAssets[type].delete(id)
+    },
+
+    async trackBatchJob(jobId: number, onComplete: () => Promise<void>, onFinally: () => void) {
+      const maxAttempts = 120
+      let attempts = 0
+      try {
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          attempts++
+          const status = await jobApi.getJobStatus(jobId)
+          if (status.status === 'COMPLETED' || status.status === 'SUCCEEDED') {
+            await onComplete()
+            return
+          }
+          if (status.status === 'FAILED') {
+            return
+          }
+        }
+      } catch (error) {
+        console.error('[EditorStore] Failed to track batch job:', error)
+      } finally {
+        onFinally()
+      }
+    },
     /**
      * Initialize editor for a project
      */
@@ -360,13 +424,31 @@ export const useEditorStore = defineStore('editor', {
     async batchGenerateShots(request: BatchGenerateRequest): Promise<BatchGenerateResponse> {
       if (!this.projectId) throw new Error('No project selected')
       try {
+        if (this.batchGenerating.shots) {
+          window.$message?.info('分镜图正在生成，请稍候')
+          throw new Error('SHOT_BATCH_GENERATING')
+        }
+        this.batchGenerating.shots = true
         console.log('[EditorStore] Batch generating shots:', request)
         const response = await generationApi.generateShotsBatch(this.projectId, request)
         window.$message?.success(`批量生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchShots()
+              window.$message?.success('批量生成分镜图完成')
+            },
+            () => { this.batchGenerating.shots = false }
+          )
+        } else {
+          this.batchGenerating.shots = false
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to batch generate shots:', error)
         window.$message?.error(error.message || '批量生成失败')
+        this.batchGenerating.shots = false
         throw error
       }
     },
@@ -377,13 +459,31 @@ export const useEditorStore = defineStore('editor', {
     async batchGenerateVideos(request: BatchGenerateRequest): Promise<BatchGenerateResponse> {
       if (!this.projectId) throw new Error('No project selected')
       try {
+        if (this.batchGenerating.videos) {
+          window.$message?.info('视频正在生成，请稍候')
+          throw new Error('VIDEO_BATCH_GENERATING')
+        }
+        this.batchGenerating.videos = true
         console.log('[EditorStore] Batch generating videos:', request)
         const response = await generationApi.generateVideosBatch(this.projectId, request)
         window.$message?.success(`批量生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchShots()
+              window.$message?.success('批量生成视频完成')
+            },
+            () => { this.batchGenerating.videos = false }
+          )
+        } else {
+          this.batchGenerating.videos = false
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to batch generate videos:', error)
         window.$message?.error(error.message || '批量生成失败')
+        this.batchGenerating.videos = false
         throw error
       }
     },
@@ -394,13 +494,31 @@ export const useEditorStore = defineStore('editor', {
     async batchGenerateCharacters(request: BatchGenerateRequest): Promise<BatchGenerateResponse> {
       if (!this.projectId) throw new Error('No project selected')
       try {
+        if (this.batchGenerating.characters) {
+          window.$message?.info('角色画像正在生成，请稍候')
+          throw new Error('CHARACTER_BATCH_GENERATING')
+        }
+        this.batchGenerating.characters = true
         console.log('[EditorStore] Batch generating characters:', request)
         const response = await generationApi.generateCharactersBatch(this.projectId, request)
         window.$message?.success(`批量生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchCharacters()
+              window.$message?.success('批量生成角色画像完成')
+            },
+            () => { this.batchGenerating.characters = false }
+          )
+        } else {
+          this.batchGenerating.characters = false
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to batch generate characters:', error)
         window.$message?.error(error.message || '批量生成失败')
+        this.batchGenerating.characters = false
         throw error
       }
     },
@@ -411,13 +529,31 @@ export const useEditorStore = defineStore('editor', {
     async batchGenerateScenes(request: BatchGenerateRequest): Promise<BatchGenerateResponse> {
       if (!this.projectId) throw new Error('No project selected')
       try {
+        if (this.batchGenerating.scenes) {
+          window.$message?.info('场景画像正在生成，请稍候')
+          throw new Error('SCENE_BATCH_GENERATING')
+        }
+        this.batchGenerating.scenes = true
         console.log('[EditorStore] Batch generating scenes:', request)
         const response = await generationApi.generateScenesBatch(this.projectId, request)
         window.$message?.success(`批量生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchScenes()
+              window.$message?.success('批量生成场景画像完成')
+            },
+            () => { this.batchGenerating.scenes = false }
+          )
+        } else {
+          this.batchGenerating.scenes = false
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to batch generate scenes:', error)
         window.$message?.error(error.message || '批量生成失败')
+        this.batchGenerating.scenes = false
         throw error
       }
     },

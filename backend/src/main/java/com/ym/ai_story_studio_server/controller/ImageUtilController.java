@@ -35,11 +35,27 @@ public class ImageUtilController {
      */
     @PostMapping("/merge")
     public Result<Map<String, String>> mergeImages(@RequestBody MergeImagesRequest request) {
-        log.info("收到图片拼接请求，图片数量: {}", request.imageUrls().size());
+        int urlCount = request.imageUrls() == null ? 0 : request.imageUrls().size();
+        int itemCount = request.imageItems() == null ? 0 : request.imageItems().size();
+        log.info("收到图片拼接请求，imageUrls: {}, imageItems: {}", urlCount, itemCount);
 
         try {
             // 1. 拼接图片
-            byte[] mergedImageBytes = imageMergeUtil.mergeImagesHorizontally(request.imageUrls());
+            byte[] mergedImageBytes;
+            if (request.imageItems() != null && !request.imageItems().isEmpty()) {
+                mergedImageBytes = imageMergeUtil.mergeImagesGridWithLabels(
+                        request.imageItems().stream()
+                                .map(item -> new ImageMergeUtil.ImageItem(item.label(), item.imageUrl()))
+                                .collect(java.util.stream.Collectors.toList())
+                );
+            } else if (request.storyboardImageUrl() != null || request.sceneImageUrl() != null
+                    || (request.characters() != null && !request.characters().isEmpty())) {
+                mergedImageBytes = imageMergeUtil.mergeImagesGridWithLabels(
+                        buildItemsFromStructuredRequest(request)
+                );
+            } else {
+                mergedImageBytes = imageMergeUtil.mergeImagesHorizontally(request.imageUrls());
+            }
 
             // 2. 上传到OSS
             String ossUrl = storageService.uploadImageBytes(
@@ -64,7 +80,45 @@ public class ImageUtilController {
      * 图片拼接请求DTO
      */
     public record MergeImagesRequest(
-            List<String> imageUrls
+            List<String> imageUrls,
+            String storyboardImageUrl,
+            String sceneImageUrl,
+            List<CharacterItem> characters,
+            List<ImageItem> imageItems
     ) {
+    }
+
+    public record CharacterItem(
+            String name,
+            String imageUrl
+    ) {
+    }
+
+    public record ImageItem(
+            String label,
+            String imageUrl
+    ) {
+    }
+
+    private List<ImageMergeUtil.ImageItem> buildItemsFromStructuredRequest(MergeImagesRequest request) {
+        List<ImageMergeUtil.ImageItem> items = new java.util.ArrayList<>();
+        if (request.storyboardImageUrl() != null && !request.storyboardImageUrl().isBlank()) {
+            items.add(new ImageMergeUtil.ImageItem("镜头参考", request.storyboardImageUrl()));
+        }
+        if (request.sceneImageUrl() != null && !request.sceneImageUrl().isBlank()) {
+            items.add(new ImageMergeUtil.ImageItem("场景参考", request.sceneImageUrl()));
+        }
+        if (request.characters() != null) {
+            for (CharacterItem character : request.characters()) {
+                if (character == null || character.imageUrl() == null || character.imageUrl().isBlank()) {
+                    continue;
+                }
+                String label = character.name() != null && !character.name().isBlank()
+                        ? character.name() + " 人物参考"
+                        : "人物参考";
+                items.add(new ImageMergeUtil.ImageItem(label, character.imageUrl()));
+            }
+        }
+        return items;
     }
 }
