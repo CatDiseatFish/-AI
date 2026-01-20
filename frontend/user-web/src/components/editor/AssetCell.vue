@@ -15,6 +15,8 @@ import LoadingSpinner from '@/components/base/LoadingSpinner.vue'
 interface Props {
   asset: AssetStatusVO
   label: string
+  /** 外部传入的缩略图URL（优先展示），用于视频使用自定义缩略图等场景 */
+  thumbnailUrl?: string
   onRegenerate?: () => void
   onDelete?: () => void
   onClick?: () => void
@@ -67,9 +69,9 @@ const canRegenerate = computed(() => {
 const handleClick = () => {
   if (props.onClick) {
     props.onClick()
-  } else if (props.asset.status === 'READY' && props.asset.currentUrl) {
+  } else if (props.asset.status === 'READY' && (props.thumbnailUrl || props.asset.currentUrl)) {
     // TODO: Open image/video viewer or show version history
-    console.log('View asset:', props.asset.currentUrl)
+    console.log('View asset:', props.thumbnailUrl || props.asset.currentUrl)
   } else if (canRegenerate.value && props.onRegenerate) {
     props.onRegenerate()
   }
@@ -87,8 +89,36 @@ const handleClick = () => {
     ]"
     :title="`${statusConfig.label} - ${asset.totalVersions} 个版本`"
   >
-    <!-- READY: Show thumbnail -->
-    <div v-if="asset.status === 'READY' && asset.currentUrl" class="relative w-full h-full p-1" @click="handleClick">
+    <!-- 优先显示外部传入的缩略图（比如视频选中的封面），不依赖状态 -->
+    <div
+      v-if="thumbnailUrl"
+      class="relative w-full h-full p-1"
+      @click="handleClick"
+    >
+      <img
+        :src="thumbnailUrl"
+        :alt="label"
+        class="w-full h-full object-cover rounded-lg"
+      >
+      <!-- 删除按钮（悬浮显示） -->
+      <button
+        v-if="onDelete"
+        @click.stop="onDelete"
+        class="absolute top-1 left-1 w-5 h-5 rounded bg-red-500/80 flex items-center justify-center hover:bg-red-500 transition-all opacity-0 group-hover:opacity-100 z-10"
+        title="删除资产"
+      >
+        <svg class="w-3 h-3 text-text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+
+    <!-- READY: 使用资产自身的 currentUrl 显示缩略图 -->
+    <div
+      v-else-if="asset.status === 'READY' && asset.currentUrl"
+      class="relative w-full h-full p-1"
+      @click="handleClick"
+    >
       <img
         :src="asset.currentUrl"
         :alt="label"

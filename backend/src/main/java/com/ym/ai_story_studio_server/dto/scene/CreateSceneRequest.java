@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Size;
  * @param categoryId 所属分类ID(可选)
  * @param name 场景名称
  * @param description 场景描述/提示词(可选)
+ * @param thumbnailUrl 缩略图URL(可选)
  */
 public record CreateSceneRequest(
         Long categoryId,
@@ -18,6 +19,8 @@ public record CreateSceneRequest(
         String name,
 
         @Size(max = 2000, message = "场景描述不能超过2000个字符")
-        String description
+        String description,
+
+        String thumbnailUrl
 ) {
 }

@@ -127,6 +127,9 @@ public class SceneLibraryServiceImpl implements SceneLibraryService {
         scene.setCategoryId(request.categoryId());
         scene.setName(request.name());
         scene.setDescription(request.description());
+        if (StringUtils.hasText(request.thumbnailUrl())) {
+            scene.setThumbnailUrl(request.thumbnailUrl());
+        }
 
         // 保存到数据库
         sceneLibraryMapper.insert(scene);

@@ -2,6 +2,7 @@ package com.ym.ai_story_studio_server.controller;
 
 import com.ym.ai_story_studio_server.common.Result;
 import com.ym.ai_story_studio_server.dto.scene.AddSceneToProjectRequest;
+import com.ym.ai_story_studio_server.dto.scene.CreateProjectSceneRequest;
 import com.ym.ai_story_studio_server.dto.scene.ProjectSceneVO;
 import com.ym.ai_story_studio_server.dto.scene.ReplaceSceneRequest;
 import com.ym.ai_story_studio_server.dto.scene.UpdateProjectSceneRequest;
@@ -59,6 +60,19 @@ public class ProjectSceneController {
         log.info("引用场景到项目, userId: {}, projectId: {}, librarySceneId: {}",
                 userId, projectId, request.librarySceneId());
         ProjectSceneVO scene = projectSceneService.addSceneToProject(userId, projectId, request);
+        return Result.success(scene);
+    }
+
+    /**
+     * 创建项目内自定义场景（不加入场景库）
+     */
+    @PostMapping("/custom")
+    public Result<ProjectSceneVO> createCustomScene(
+            @PathVariable("projectId") Long projectId,
+            @Valid @RequestBody CreateProjectSceneRequest request) {
+        Long userId = UserContext.getUserId();
+        log.info("创建项目内自定义场景, userId: {}, projectId: {}", userId, projectId);
+        ProjectSceneVO scene = projectSceneService.createCustomScene(userId, projectId, request);
         return Result.success(scene);
     }
 

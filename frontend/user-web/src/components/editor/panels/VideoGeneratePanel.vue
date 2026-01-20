@@ -36,6 +36,8 @@ const aspectRatioOptions = [
 
 const duration = ref(10)
 const durationOptions = [10, 15]
+const generateCount = ref(1)
+const generateCountOptions = [1, 2, 3, 4]
 
 const mapAspectRatioToSize = (value: '16:9' | '9:16') => {
   return value === '9:16' ? '720x1280' : '1280x720'
@@ -135,6 +137,22 @@ const openImageOverlay = (url: string) => {
 const closeImageOverlay = () => {
   showImageOverlay.value = false
   overlayImageUrl.value = ''
+}
+
+// 视频悬浮播放
+const showVideoOverlay = ref(false)
+const overlayVideoUrl = ref<string>('')
+const overlayVideoPoster = ref<string>('')
+const openVideoOverlay = (videoUrl: string, poster?: string) => {
+  if (!videoUrl) return
+  overlayVideoUrl.value = videoUrl
+  overlayVideoPoster.value = poster || ''
+  showVideoOverlay.value = true
+}
+const closeVideoOverlay = () => {
+  showVideoOverlay.value = false
+  overlayVideoUrl.value = ''
+  overlayVideoPoster.value = ''
 }
 
 // 备选素材（从分镜图中选择）
@@ -352,18 +370,9 @@ const saveHistory = () => {
 }
 
 const getFallbackThumbnailUrl = () => {
-  if (currentShot.value?.shotImage?.currentUrl) return currentShot.value.shotImage.currentUrl
   if (videoReferenceUrl.value) return videoReferenceUrl.value
-  if (currentShot.value?.scene?.thumbnailUrl) return currentShot.value.scene.thumbnailUrl
-  if (currentShot.value?.characters?.length) {
-    const firstChar = currentShot.value.characters.find(char => char.thumbnailUrl)
-    if (firstChar?.thumbnailUrl) return firstChar.thumbnailUrl
-  }
-  if (currentShot.value?.props?.length) {
-    const firstProp = currentShot.value.props.find(prop => prop.thumbnailUrl)
-    if (firstProp?.thumbnailUrl) return firstProp.thumbnailUrl
-  }
-  return 'https://via.placeholder.com/400x225'
+  if (currentShot.value?.shotImage?.currentUrl) return currentShot.value.shotImage.currentUrl
+  return ''
 }
 
 const captureVideoThumbnail = (videoUrl: string): Promise<string | null> => {
@@ -453,6 +462,22 @@ const updateHistoryVideoUrl = async (jobId: number, resultUrl: string) => {
   const capturedThumbnail = await captureVideoThumbnail(resultUrl)
   generationHistory.value[index].thumbnailUrl = capturedThumbnail || getFallbackThumbnailUrl()
   saveHistory()
+}
+
+const pollJobStatusForHistory = async (jobId: number) => {
+  try {
+    const job = await pollJobStatus(jobId)
+    if (job.resultUrl) {
+      await updateHistoryVideoUrl(jobId, job.resultUrl)
+      return
+    }
+    const resultUrl = await waitForResultUrl(jobId)
+    if (resultUrl) {
+      await updateHistoryVideoUrl(jobId, resultUrl)
+    }
+  } catch (error) {
+    console.error('[VideoGeneratePanel] background poll failed:', error)
+  }
 }
 
 const maxPollingAttempts = 120
@@ -570,8 +595,15 @@ const handleAIGenerate = async () => {
     return
   }
   
+  if (!videoReferenceUrl.value) {
+    const shouldProceed = window.confirm('未提供参考图，是否继续生成视频？')
+    if (!shouldProceed) {
+      return
+    }
+  }
+
   isGenerating.value = true
-  
+
   try {
     // 1. 收集当前分镜的所有资源（剧本、分镜图、场景、角色、道具）
     const resources = collectAssetResources()
@@ -585,12 +617,15 @@ const handleAIGenerate = async () => {
     const fixedTemplate = '根据参考图的设定，使用参考图中的角色、场景、道具，运用合理的构建分镜，合理的动作，合理的运镜，合理的环境渲染，发散你的想象力，生成保持风格一致性的2D动漫视频，要求不要字幕和BGM，没有台词时禁止说话，线条细致，人物画风保持与参考图一致，清晰不模糊，颜色鲜艳，光影效果，超清画质，电影级镜头（cinematicdvnamiccamera）,音质清晰无杂质，第一个镜头0.3秒空境，请忠实原文，不增加原文没有的内容，不减少原文包含的信息，分镜要求如下：'
     
     // 构建prompt：内嵌规则 + 分镜剧本
-    let customPrompt = fixedTemplate
-    if (resources.script) {
-      customPrompt += resources.script
-    } else {
-      customPrompt += '（无剧本内容）'
-    }
+      let customPrompt = fixedTemplate
+      if (resources.script) {
+        customPrompt += resources.script
+      } else {
+        customPrompt += '（无剧本内容）'
+      }
+      if (scriptDescription.value.trim()) {
+        customPrompt += `\n用户补充描述：${scriptDescription.value.trim()}`
+      }
     
     console.log('[VideoGeneratePanel] 生成参数:', {
       shotId: props.shotId,
@@ -602,64 +637,54 @@ const handleAIGenerate = async () => {
     })
     
     // 3. 调用后端视频生成接口
-    const response = await api.post(
-      `/projects/${editorStore.projectId}/generate/shot-video/${props.shotId}`,
-      {
+      const requestPayload = {
         prompt: customPrompt,
         aspectRatio: aspectRatio.value,
         size: mapAspectRatioToSize(aspectRatio.value),
         duration: duration.value,
         referenceImageUrl: videoReferenceUrl.value || undefined,
-        shotImage: resources.shotImage,
-        scene: resources.scene,
-        characters: resources.characters,
-        props: resources.props
+      shotImage: resources.shotImage,
+      scene: resources.scene,
+      characters: resources.characters,
+      props: resources.props
+    }
+
+      const submitSingleJob = async () => {
+        const response = await api.post(
+          `/projects/${editorStore.projectId}/generate/shot-video/${props.shotId}`,
+          requestPayload
+        )
+      console.log('[VideoGeneratePanel] 生成响应:', response)
+      const jobId = response.jobId
+      const fallbackThumbnail = getFallbackThumbnailUrl()
+      const newHistoryItem: VideoHistoryItem = {
+        id: jobId,
+        videoUrl: '',
+        thumbnailUrl: fallbackThumbnail || 'https://via.placeholder.com/400x225',
+        timestamp: new Date().toLocaleString('zh-CN'),
+        prompt: customPrompt,
+        userInput: scriptDescription.value.trim(),
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
       }
-    )
-    
-    console.log('[VideoGeneratePanel] 生成响应:', response)
-    
-    // 4. 获取返回的jobId
-    const jobId = response.jobId
-    
-    // 使用第一个可用的图片作为缩略图（优先使用分镜图）
-    let mockThumbnailUrl = 'https://via.placeholder.com/400x225'
-    if (resources.shotImage?.thumbnailUrl) {
-      mockThumbnailUrl = resources.shotImage.thumbnailUrl
-    } else if (resources.scene?.thumbnailUrl) {
-      mockThumbnailUrl = resources.scene.thumbnailUrl
-    } else if (resources.characters.length > 0) {
-      mockThumbnailUrl = resources.characters[0].thumbnailUrl
-    } else if (resources.props.length > 0) {
-      mockThumbnailUrl = resources.props[0].thumbnailUrl
+      generationHistory.value.unshift(newHistoryItem)
+      selectedHistoryId.value = jobId
+      saveHistory()
+      return jobId
     }
-    
-    // 5. 保存到历史记录（使用jobId）
-    const newHistoryItem: VideoHistoryItem = {
-      id: jobId, // 使用后端返回的jobId
-      videoUrl: '', // 视频URL将在任务完成后更新
-      thumbnailUrl: mockThumbnailUrl,
-      timestamp: new Date().toLocaleString('zh-CN'),
-      prompt: customPrompt,
-      userInput: '',
-      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7天后过期
+
+    const totalCount = Math.min(4, Math.max(1, generateCount.value))
+    const jobIds: number[] = []
+    for (let i = 0; i < totalCount; i += 1) {
+      const jobId = await submitSingleJob()
+      jobIds.push(jobId)
+      if (i === 0) {
+        startPollingJobStatus(jobId)
+      } else {
+        pollJobStatusForHistory(jobId)
+      }
     }
-    
-    generationHistory.value.unshift(newHistoryItem)
-    selectedHistoryId.value = jobId
-    
-    // 仅在未上传参考图时，用素材图做展示
-    if (!videoReferenceUrl.value) {
-      videoReferenceUrl.value = mockThumbnailUrl
-      saveVideoReference(mockThumbnailUrl)
-    }
-    
-    // 保存到 localStorage
-    saveHistory()
-    
-    window.$message?.success(`视频生成任务已提交，任务ID: ${jobId}。请等待生成完成...`)
-    
-    startPollingJobStatus(jobId)
+
+    window.$message?.success(`已提交${jobIds.length}个视频生成任务`)
     
   } catch (error: any) {
     console.error('[VideoGeneratePanel] 生成失败:', error)
@@ -678,11 +703,44 @@ const handleSelectMaterial = (material: any) => {
 
 // 点击历史记录（切换待生成缩略图）
 const handleHistoryClick = (item: VideoHistoryItem) => {
+  console.log('[VideoGeneratePanel] handleHistoryClick 被调用:', { 
+    shotId: props.shotId, 
+    itemId: item.id, 
+    thumbnailUrl: item.thumbnailUrl,
+    videoUrl: item.videoUrl,
+    fullItem: item
+  })
   selectedHistoryId.value = item.id
   generatedVideoThumbnail.value = item.thumbnailUrl
+  
+  // 同步选中的缩略图到分镜表（在对应分镜的视频格子里展示）
+  // 优先使用 thumbnailUrl，如果没有则使用 videoUrl（视频的第一帧）
+  const thumbnailToUse = item.thumbnailUrl || item.videoUrl || null
+  if (thumbnailToUse) {
+    editorStore.setShotVideoThumbnail(props.shotId, thumbnailToUse)
+    console.log('[VideoGeneratePanel] ✅ 已设置缩略图到 store:', { 
+      shotId: props.shotId, 
+      thumbnailUrl: thumbnailToUse,
+      storeValue: editorStore.shotVideoThumbnails[props.shotId]
+    })
+  } else {
+    console.warn('[VideoGeneratePanel] ⚠️ 历史记录没有可用的缩略图或视频URL:', item)
+  }
+  
   // 回填用户输入
   scriptDescription.value = item.userInput
-  console.log('[VideoGeneratePanel] 选择历史记录:', item.id)
+  console.log('[VideoGeneratePanel] 选择历史记录完成:', item.id)
+}
+
+// 点击卡片：有视频则放大播放；生成中则放大预览图
+const handleHistoryPreview = (item: VideoHistoryItem) => {
+  if (item.videoUrl) {
+    openVideoOverlay(item.videoUrl, item.thumbnailUrl)
+    return
+  }
+  if (item.thumbnailUrl) {
+    openImageOverlay(item.thumbnailUrl)
+  }
 }
 
 // 删除历史记录
@@ -936,9 +994,9 @@ watch(
       <!-- 用户自定义内容输入框（暂不展示） -->
 
       <!-- 底部控制栏 -->
-      <div class="flex items-center justify-between mb-6">
+      <div class="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <!-- 格式 / 时长选择 -->
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <select
             v-model="aspectRatio"
             class="px-4 py-2.5 bg-bg-hover border border-border-default rounded text-text-primary text-sm focus:outline-none focus:border-gray-900/50 cursor-pointer"
@@ -953,6 +1011,14 @@ watch(
           >
             <option v-for="option in durationOptions" :key="option" :value="option" class="bg-bg-elevated">
               {{ option }} 秒
+            </option>
+          </select>
+          <select
+            v-model="generateCount"
+            class="px-4 py-2.5 bg-bg-hover border border-border-default rounded text-text-primary text-sm focus:outline-none focus:border-gray-900/50 cursor-pointer"
+          >
+            <option v-for="option in generateCountOptions" :key="option" :value="option" class="bg-bg-elevated">
+              生成 {{ option }} 条
             </option>
           </select>
         </div>
@@ -994,51 +1060,52 @@ watch(
         <div class="flex items-center justify-between mb-4">
           <h4 class="text-text-primary text-sm font-medium">生成结果与历史</h4>
         </div>
-        <div class="relative w-full aspect-video rounded border-2 border-dashed border-border-default bg-bg-subtle flex items-center justify-center overflow-hidden mb-6">
-          <template v-if="previewImageUrl">
-            <img
-              :src="previewImageUrl"
-              alt="视频首帧参考"
-              class="w-full h-full object-cover rounded"
-              @click.stop="openImageOverlay(previewImageUrl)"
-            >
-          </template>
-          <template v-else>
-            <div class="text-center">
-              <svg class="w-16 h-16 mx-auto text-text-disabled mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-              </svg>
-              <p class="text-text-tertiary text-sm">暂无结果</p>
-            </div>
-          </template>
-        </div>
         <div v-if="generationHistory.length === 0" class="text-center py-8">
           <p class="text-text-tertiary text-sm mb-2">暂无生成记录</p>
           <p class="text-[#FF6B9D] text-xs">
-            未被使用的生成记录仅保疙7天，请及时下载文件
+            未被使用的生成记录仅保存7天，请及时下载文件
           </p>
         </div>
 
         <div v-else>
-          <div class="grid grid-cols-4 gap-2 mb-3">
+          <div class="grid grid-cols-2 gap-3 mb-3">
             <div
               v-for="item in generationHistory.slice(0, 8)"
               :key="item.id"
-              @click="handleHistoryClick(item)"
-              class="relative aspect-square rounded overflow-hidden cursor-pointer hover:ring-2 hover:ring-[#00FFCC]/50 transition-all group"
+              class="relative aspect-video rounded overflow-hidden bg-black/60 hover:ring-2 hover:ring-[#00FFCC]/50 transition-all group cursor-pointer"
+              @click="handleHistoryClick(item); handleHistoryPreview(item)"
             >
-              <img :src="item.thumbnailUrl" alt="历史记录" class="w-full h-full object-cover">
+              <template v-if="item.videoUrl">
+                <!-- 卡片内不直接播放：展示封面 + 播放按钮，点击后悬浮放大播放 -->
+                <img
+                  :src="item.thumbnailUrl"
+                  alt="视频封面"
+                  class="w-full h-full object-cover"
+                >
+                <div class="absolute inset-0 flex items-center justify-center bg-black/20">
+                  <svg class="w-12 h-12 text-white/90 drop-shadow" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z"></path>
+                  </svg>
+                </div>
+              </template>
+              <template v-else>
+                <img :src="item.thumbnailUrl" alt="生成中" class="w-full h-full object-cover opacity-80">
+                <div class="absolute inset-0 flex items-center justify-center text-text-secondary text-xs">
+                  生成中...
+                </div>
+              </template>
 
               <!-- 播放按钮覆盖 -->
-              <div class="absolute inset-0 bg-bg-subtle flex items-center justify-center">
+              <div v-if="!item.videoUrl" class="absolute inset-0 bg-bg-subtle flex items-center justify-center">
                 <svg class="w-10 h-10 text-text-secondary" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z"></path>
                 </svg>
               </div>
-              
-              <!-- 悬浮按钮 -->
-              <div class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                <button 
+
+              <!-- 悬浮按钮（保留下载/删除） -->
+              <div class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-10">
+                <button
+                  v-if="item.videoUrl"
                   @click.stop="handleDownloadVideo(item.videoUrl, `分镜${props.shotNo}_视频`)"
                   class="p-1.5 bg-gray-800 rounded hover:bg-gray-700 transition-colors"
                   title="下载"
@@ -1047,7 +1114,7 @@ watch(
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                   </svg>
                 </button>
-                <button 
+                <button
                   @click.stop="handleDeleteHistory(item.id)"
                   class="p-1.5 bg-gray-800 rounded hover:bg-gray-700 transition-colors"
                   title="删除"
@@ -1061,7 +1128,7 @@ watch(
           </div>
 
           <p class="text-[#FF6B9D] text-xs text-center">
-            未被使用的生成记录仅保疙7天，请及时下载文件
+            未被使用的生成记录仅保存7天，请及时下载文件
           </p>
         </div>
       </div>
@@ -1082,6 +1149,31 @@ watch(
           class="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gray-900 text-text-primary flex items-center justify-center hover:bg-gray-700 transition-colors"
           title="关闭"
           @click="closeImageOverlay"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <!-- 视频悬浮播放层 -->
+    <div
+      v-if="showVideoOverlay"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      @click="closeVideoOverlay"
+    >
+      <div class="relative w-[900px] max-w-[92vw] max-h-[90vh]" @click.stop>
+        <video
+          :src="overlayVideoUrl"
+          :poster="overlayVideoPoster"
+          class="w-full h-auto max-h-[90vh] rounded bg-black"
+          controls
+          autoplay
+          playsinline
+        ></video>
+        <button
+          class="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gray-900 text-text-primary flex items-center justify-center hover:bg-gray-700 transition-colors"
+          title="关闭"
+          @click="closeVideoOverlay"
         >
           ✕
         </button>

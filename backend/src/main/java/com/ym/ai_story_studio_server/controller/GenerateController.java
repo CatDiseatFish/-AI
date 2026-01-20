@@ -524,12 +524,17 @@ public class GenerateController {
             @PathVariable("projectId") Long projectId,
             @PathVariable("characterId") Long characterId,
             @RequestParam(required = false) String aspectRatio,
-            @RequestParam(required = false) String model) {
-        log.info("接收到单个角色生成请求 - projectId: {}, characterId: {}",
-                projectId, characterId);
+            @RequestParam(required = false) String model,
+            @RequestParam(required = false) String customPrompt,
+            @RequestParam(required = false) List<String> referenceImageUrls,
+            @RequestParam(required = false) String referenceImageUrl) {
+        log.info("接收到单个角色生成请求 - projectId: {}, characterId: {}, hasCustomPrompt: {}, hasReferenceImage: {}",
+                projectId, characterId, customPrompt != null, referenceImageUrl != null);
+
+        List<String> resolvedReferenceImageUrls = resolveReferenceImageUrls(referenceImageUrls, referenceImageUrl);
 
         BatchGenerateResponse response = batchGenerationService.generateSingleCharacter(
-                projectId, characterId, aspectRatio, model);
+                projectId, characterId, aspectRatio, model, customPrompt, resolvedReferenceImageUrls);
 
         log.info("单个角色生成任务已提交 - jobId: {}", response.jobId());
 
@@ -553,12 +558,17 @@ public class GenerateController {
             @PathVariable("projectId") Long projectId,
             @PathVariable("sceneId") Long sceneId,
             @RequestParam(required = false) String aspectRatio,
-            @RequestParam(required = false) String model) {
-        log.info("接收到单个场景生成请求 - projectId: {}, sceneId: {}",
-                projectId, sceneId);
+            @RequestParam(required = false) String model,
+            @RequestParam(required = false) String customPrompt,
+            @RequestParam(required = false) List<String> referenceImageUrls,
+            @RequestParam(required = false) String referenceImageUrl) {
+        log.info("接收到单个场景生成请求 - projectId: {}, sceneId: {}, hasCustomPrompt: {}, hasReferenceImage: {}",
+                projectId, sceneId, customPrompt != null, referenceImageUrl != null);
+
+        List<String> resolvedReferenceImageUrls = resolveReferenceImageUrls(referenceImageUrls, referenceImageUrl);
 
         BatchGenerateResponse response = batchGenerationService.generateSingleScene(
-                projectId, sceneId, aspectRatio, model);
+                projectId, sceneId, aspectRatio, model, customPrompt, resolvedReferenceImageUrls);
 
         log.info("单个场景生成任务已提交 - jobId: {}", response.jobId());
 
@@ -582,12 +592,17 @@ public class GenerateController {
             @PathVariable("projectId") Long projectId,
             @PathVariable("propId") Long propId,
             @RequestParam(required = false) String aspectRatio,
-            @RequestParam(required = false) String model) {
-        log.info("接收到单个道具生成请求 - projectId: {}, propId: {}",
-                projectId, propId);
+            @RequestParam(required = false) String model,
+            @RequestParam(required = false) String customPrompt,
+            @RequestParam(required = false) List<String> referenceImageUrls,
+            @RequestParam(required = false) String referenceImageUrl) {
+        log.info("接收到单个道具生成请求 - projectId: {}, propId: {}, hasCustomPrompt: {}, hasReferenceImage: {}",
+                projectId, propId, customPrompt != null, referenceImageUrl != null);
+
+        List<String> resolvedReferenceImageUrls = resolveReferenceImageUrls(referenceImageUrls, referenceImageUrl);
 
         BatchGenerateResponse response = batchGenerationService.generateSingleProp(
-                projectId, propId, aspectRatio, model);
+                projectId, propId, aspectRatio, model, customPrompt, resolvedReferenceImageUrls);
 
         log.info("单个道具生成任务已提交 - jobId: {}", response.jobId());
 

@@ -1,10 +1,14 @@
 package com.ym.ai_story_studio_server.service.impl;
 
+import com.aliyun.dysmsapi20170525.Client;
+import com.aliyun.dysmsapi20170525.models.SendSmsRequest;
+import com.aliyun.dysmsapi20170525.models.SendSmsResponse;
+import com.aliyun.teaopenapi.models.Config;
 import com.ym.ai_story_studio_server.config.SmsProperties;
 import com.ym.ai_story_studio_server.service.SmsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
 
 /**
@@ -18,7 +22,7 @@ import org.springframework.stereotype.Service;
  */
 @Slf4j
 @Service
-@ConditionalOnProperty(name = "sms.provider", havingValue = "aliyun")
+@ConditionalOnExpression("'${sms.provider:mock}' == 'aliyun' || '${sms.provider:mock}' == 'true'")
 @RequiredArgsConstructor
 public class AliyunSmsServiceImpl implements SmsService {
 
@@ -26,48 +30,49 @@ public class AliyunSmsServiceImpl implements SmsService {
 
     @Override
     public boolean sendVerificationCode(String phone, String code) {
-        // TODO: V2版本集成阿里云SMS SDK
-        // 实现步骤：
-        // 1. 添加阿里云SMS SDK依赖到pom.xml
-        //    <dependency>
-        //        <groupId>com.aliyun</groupId>
-        //        <artifactId>dysmsapi20170525</artifactId>
-        //        <version>2.0.24</version>
-        //    </dependency>
-        //
-        // 2. 创建DefaultAcsClient
-        //    DefaultProfile profile = DefaultProfile.getProfile(
-        //        "cn-hangzhou",
-        //        smsProperties.getAliyun().getAccessKeyId(),
-        //        smsProperties.getAliyun().getAccessKeySecret()
-        //    );
-        //    IAcsClient client = new DefaultAcsClient(profile);
-        //
-        // 3. 构造SendSmsRequest
-        //    SendSmsRequest request = new SendSmsRequest();
-        //    request.setPhoneNumbers(phone);
-        //    request.setSignName(smsProperties.getAliyun().getSignName());
-        //    request.setTemplateCode(smsProperties.getAliyun().getTemplateCode());
-        //    request.setTemplateParam("{\"code\":\"" + code + "\"}");
-        //
-        // 4. 发送短信并处理响应
-        //    SendSmsResponse response = client.getAcsResponse(request);
-        //    if ("OK".equals(response.getCode())) {
-        //        log.info("【阿里云SMS】短信发送成功: phone={}", maskPhone(phone));
-        //        return true;
-        //    } else {
-        //        log.error("【阿里云SMS】短信发送失败: code={}, message={}",
-        //            response.getCode(), response.getMessage());
-        //        return false;
-        //    }
+        if (!hasValidConfig()) {
+            log.error("【阿里云SMS】配置不完整，请检查 accessKeyId/accessKeySecret/signName/templateCode");
+            return false;
+        }
 
-        log.warn("【阿里云SMS】服务尚未实现，请在生产环境前完成集成");
-        log.warn("【配置信息】signName={}, templateCode={}",
-                smsProperties.getAliyun().getSignName(),
-                smsProperties.getAliyun().getTemplateCode());
+        try {
+            Client client = createClient();
+            SendSmsRequest request = new SendSmsRequest()
+                    .setPhoneNumbers(phone)
+                    .setSignName(smsProperties.getAliyun().getSignName())
+                    .setTemplateCode(smsProperties.getAliyun().getTemplateCode())
+                    .setTemplateParam("{\"code\":\"" + code + "\"}");
 
-        // 临时返回false，生产环境需实现真实逻辑
-        return false;
+            SendSmsResponse response = client.sendSms(request);
+            String responseCode = response.getBody() != null ? response.getBody().getCode() : null;
+            if ("OK".equalsIgnoreCase(responseCode)) {
+                log.info("【阿里云SMS】短信发送成功: phone={}", maskPhone(phone));
+                return true;
+            }
+
+            String message = response.getBody() != null ? response.getBody().getMessage() : "unknown";
+            log.error("【阿里云SMS】短信发送失败: code={}, message={}", responseCode, message);
+            return false;
+        } catch (Exception e) {
+            log.error("【阿里云SMS】发送异常: phone={}, error={}", maskPhone(phone), e.getMessage(), e);
+            return false;
+        }
+    }
+
+    private Client createClient() throws Exception {
+        Config config = new Config()
+                .setAccessKeyId(smsProperties.getAliyun().getAccessKeyId())
+                .setAccessKeySecret(smsProperties.getAliyun().getAccessKeySecret());
+        config.endpoint = "dysmsapi.aliyuncs.com";
+        return new Client(config);
+    }
+
+    private boolean hasValidConfig() {
+        SmsProperties.AliyunConfig aliyun = smsProperties.getAliyun();
+        return aliyun.getAccessKeyId() != null && !aliyun.getAccessKeyId().isBlank()
+                && aliyun.getAccessKeySecret() != null && !aliyun.getAccessKeySecret().isBlank()
+                && aliyun.getSignName() != null && !aliyun.getSignName().isBlank()
+                && aliyun.getTemplateCode() != null && !aliyun.getTemplateCode().isBlank();
     }
 
     /**

@@ -1,5 +1,5 @@
 import api from './index'
-import type { SendCodeRequest, LoginRequest, LoginResponse, UserVO, UpdateProfileRequest } from '@/types/api'
+import type { SendCodeRequest, LoginRequest, LoginResponse, UserVO, UpdateProfileRequest, CaptchaResponse } from '@/types/api'
 
 export const authApi = {
   /**
@@ -7,6 +7,13 @@ export const authApi = {
    */
   sendCode(data: SendCodeRequest): Promise<void> {
     return api.post('/auth/phone/send-code', data)
+  },
+
+  /**
+   * Get image captcha
+   */
+  getCaptcha(): Promise<CaptchaResponse> {
+    return api.get('/auth/captcha')
   },
 
   /**
@@ -29,6 +36,7 @@ export const authApi = {
   updateProfile(data: UpdateProfileRequest): Promise<UserVO | null> {
     return api.put('/user/profile', data)
   },
+
 
   /**
    * Upload avatar

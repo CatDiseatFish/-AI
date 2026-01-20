@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useEditorStore } from '@/stores/editor'
 import { jobApi } from '@/api/job'
 import type { JobVO } from '@/types/api'
@@ -13,6 +13,7 @@ const filterType = ref<'all' | 'image' | 'video'>('all')
 const sortBy = ref<'date' | 'type'>('date')
 const loading = ref(false)
 const historyRecords = ref<JobVO[]>([])
+let refreshTimer: number | null = null
 
 const loadHistory = async () => {
   if (!editorStore.projectId) return
@@ -25,10 +26,36 @@ const loadHistory = async () => {
     })
     historyRecords.value = response.records || []
   } catch (error) {
-    console.error('[HistoryPanel] \u52a0\u8f7d\u5386\u53f2\u8bb0\u5f55\u5931\u8d25:', error)
+    console.error('[HistoryPanel] 加载历史记录失败:', error)
     historyRecords.value = []
   } finally {
     loading.value = false
+    refreshIfNeeded()
+  }
+}
+
+const hasActiveJobs = () => {
+  return historyRecords.value.some(record => record.status === 'PENDING' || record.status === 'RUNNING')
+}
+
+const startAutoRefresh = () => {
+  if (refreshTimer != null) return
+  refreshTimer = window.setInterval(() => {
+    loadHistory()
+  }, 3000)
+}
+
+const stopAutoRefresh = () => {
+  if (refreshTimer == null) return
+  window.clearInterval(refreshTimer)
+  refreshTimer = null
+}
+
+const refreshIfNeeded = () => {
+  if (hasActiveJobs()) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
   }
 }
 
@@ -116,6 +143,10 @@ const getTargetLabel = (record: JobVO) => {
 }
 
 const getModelLabel = (record: JobVO) => {
+  const category = getJobCategory(record.jobType)
+  if (record.jobType.includes('TEXT')) return 'gemini3pro'
+  if (category === 'image') return '\u9999\u8549pro'
+  if (category === 'video') return 'sora2'
   const meta = parseMeta(record.metaJson)
   return meta?.model || '\u9ed8\u8ba4'
 }
@@ -171,7 +202,11 @@ const filteredRecords = computed(() => {
 })
 
 onMounted(() => {
-  loadHistory()
+  loadHistory().finally(() => refreshIfNeeded())
+})
+
+onUnmounted(() => {
+  stopAutoRefresh()
 })
 </script>
 

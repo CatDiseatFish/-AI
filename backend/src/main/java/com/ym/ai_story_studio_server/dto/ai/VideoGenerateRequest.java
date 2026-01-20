@@ -65,7 +65,7 @@ public record VideoGenerateRequest(
         String aspectRatio,
 
         @Min(value = 1, message = "视频时长不能小于1秒")
-        @Max(value = 10, message = "视频时长不能大于10秒")
+        @Max(value = 15, message = "视频时长不能大于15秒")
         Integer duration,
 
         @Pattern(

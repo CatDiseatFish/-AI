@@ -130,7 +130,7 @@ const handleMergeSelected = async () => {
 // Batch generate shots
 const handleBatchGenerateShots = async () => {
   const count = editorStore.selectedShotIds.size
-  if (!confirm(`确定为选中的 ${count} 条分镜批量生成分镜图吗？这将消耗 ${count * 50} 积分。`)) {
+  if (!confirm(`确定为选中的 ${count} 条分镜批量生成分镜图吗？`)) {
     return
   }
 
@@ -150,7 +150,7 @@ const handleBatchGenerateShots = async () => {
 // Batch generate videos
 const handleBatchGenerateVideos = async () => {
   const count = editorStore.selectedShotIds.size
-  if (!confirm(`确定为选中的 ${count} 条分镜批量生成视频吗？这将消耗 ${count * 100} 积分。`)) {
+  if (!confirm(`确定为选中的 ${count} 条分镜批量生成视频吗？`)) {
     return
   }
 

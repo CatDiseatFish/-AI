@@ -38,4 +38,9 @@ public class TextParsingMessage implements Serializable {
      * 原始文本内容
      */
     private String rawText;
+
+    /**
+     * 临时API密钥(可选)
+     */
+    private String apiKey;
 }

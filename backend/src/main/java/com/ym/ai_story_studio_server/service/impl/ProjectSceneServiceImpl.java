@@ -185,6 +185,39 @@ public class ProjectSceneServiceImpl implements ProjectSceneService {
         );
     }
 
+    @Override
+    public ProjectSceneVO createCustomScene(Long userId, Long projectId,
+                                            com.ym.ai_story_studio_server.dto.scene.CreateProjectSceneRequest request) {
+        log.info("创建自定义项目场景, userId: {}, projectId: {}", userId, projectId);
+
+        validateProjectOwnership(projectId, userId);
+
+        ProjectScene projectScene = new ProjectScene();
+        projectScene.setProjectId(projectId);
+        projectScene.setDisplayName(request.displayName());
+        projectScene.setOverrideDescription(request.overrideDescription());
+        projectSceneMapper.insert(projectScene);
+
+        String displayName = StringUtils.hasText(request.displayName())
+                ? request.displayName()
+                : "自定义场景";
+        String finalDescription = StringUtils.hasText(request.overrideDescription())
+                ? request.overrideDescription()
+                : null;
+
+        return new ProjectSceneVO(
+                projectScene.getId(),
+                projectId,
+                null,
+                "自定义场景",
+                displayName,
+                finalDescription,
+                projectScene.getOverrideDescription(),
+                projectScene.getThumbnailUrl(),
+                projectScene.getCreatedAt()
+        );
+    }
+
     /**
      * 更新项目内场景覆盖
      *
@@ -218,6 +251,20 @@ public class ProjectSceneServiceImpl implements ProjectSceneService {
         }
         if (request.overrideDescription() != null) {
             projectScene.setOverrideDescription(request.overrideDescription());
+        }
+        if (request.thumbnailUrl() != null) {
+            projectScene.setThumbnailUrl(request.thumbnailUrl());
+        }
+        if (request.librarySceneId() != null) {
+            SceneLibrary newLibScene = sceneLibraryMapper.selectById(request.librarySceneId());
+            if (newLibScene == null || newLibScene.getDeletedAt() != null) {
+                throw new BusinessException(ResultCode.RESOURCE_NOT_FOUND, "场景不存在");
+            }
+            if (!newLibScene.getUserId().equals(userId)) {
+                throw new BusinessException(ResultCode.ACCESS_DENIED);
+            }
+            projectScene.setLibrarySceneId(request.librarySceneId());
+            log.info("更新场景库关联, 新librarySceneId: {}", request.librarySceneId());
         }
 
         // 保存到数据库

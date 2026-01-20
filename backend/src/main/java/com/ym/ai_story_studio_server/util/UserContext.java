@@ -37,6 +37,7 @@ public class UserContext {
      * ThreadLocal存储当前请求的用户ID
      */
     private static final ThreadLocal<Long> userIdHolder = new ThreadLocal<>();
+    private static final ThreadLocal<String> apiKeyHolder = new ThreadLocal<>();
 
     /**
      * 设置当前请求的用户ID
@@ -45,6 +46,10 @@ public class UserContext {
      */
     public static void setUserId(Long userId) {
         userIdHolder.set(userId);
+    }
+
+    public static void setApiKey(String apiKey) {
+        apiKeyHolder.set(apiKey);
     }
 
     /**
@@ -56,6 +61,10 @@ public class UserContext {
         return userIdHolder.get();
     }
 
+    public static String getApiKey() {
+        return apiKeyHolder.get();
+    }
+
     /**
      * 清除当前请求的用户ID
      *
@@ -63,5 +72,6 @@ public class UserContext {
      */
     public static void clear() {
         userIdHolder.remove();
+        apiKeyHolder.remove();
     }
 }

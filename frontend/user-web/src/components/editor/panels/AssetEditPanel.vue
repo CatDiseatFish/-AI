@@ -354,6 +354,8 @@ onMounted(async () => {
     }
   }
   
+  let skipAutoParse = false
+
   // 如果有已存在的描述，直接使用
   if (props.existingDescription) {
     aiDescription.value = props.existingDescription
@@ -364,9 +366,11 @@ onMounted(async () => {
     } else {
       currentCharacterName.value = props.characterName || ''
     }
-    // 有已有描述时不自动触发解析
-    return
-  } else if (props.prefillDescription) {
+    // 有已有描述时不自动触发解析，但仍加载历史和数据
+    skipAutoParse = true
+  }
+
+  if (!skipAutoParse && props.prefillDescription) {
     // 根据资产类型调用不同的解析函数
     if (props.assetType === 'scene' && props.sceneName) {
       await parseSceneDescription(props.prefillDescription, props.sceneName)
@@ -381,6 +385,26 @@ onMounted(async () => {
   
   // 加载历史记录
   await loadGenerationHistory()
+
+  // 如果没有 assetId，尝试根据名称设置当前项目ID，确保加入库按钮可用
+  if (!props.assetId) {
+    if (props.assetType === 'scene' && !currentSceneId.value) {
+      const ids = getSameNameSceneIds.value
+      if (ids.length > 0) {
+        currentSceneId.value = ids[0]
+      }
+    } else if (props.assetType === 'prop' && !currentPropId.value) {
+      const ids = getSameNamePropIds.value
+      if (ids.length > 0) {
+        currentPropId.value = ids[0]
+      }
+    } else if (!currentCharacterId.value) {
+      const ids = getSameNameCharacterIds.value
+      if (ids.length > 0) {
+        currentCharacterId.value = ids[0]
+      }
+    }
+  }
 })
 
 // 监听 assetId 变化时同步更新 currentCharacterId
@@ -417,9 +441,15 @@ watch(() => [editorStore.props, editorStore.scenes, editorStore.characters], () 
   // 只有当新URL有效且不同于当前URL时才更新
   // 注意：如果是本地blob预览中，则不覆盖，除非store更新的是远程URL
   if (newUrl && (newUrl.startsWith('http') || newUrl.startsWith('blob:'))) {
+    if (manualPreviewUrl.value && newUrl !== manualPreviewUrl.value) {
+      return
+    }
     // 防止覆盖用户刚上传但还没保存的图（如果是同一个URL则无所谓）
     if (newUrl !== generatedImageUrl.value) {
-       generatedImageUrl.value = newUrl
+      generatedImageUrl.value = newUrl
+    }
+    if (manualPreviewUrl.value === newUrl) {
+      manualPreviewUrl.value = ''
     }
   }
 }, { deep: true })
@@ -427,9 +457,11 @@ watch(() => [editorStore.props, editorStore.scenes, editorStore.characters], () 
 // 参考图文件
 const referenceImage = ref<File | null>(null)
 const referenceImageUrl = ref<string>('')
+const isUploadingReference = ref(false)
 
 // 生成的图片预览
 const generatedImageUrl = ref<string>('')
+const manualPreviewUrl = ref<string>('')
 
 const showImageOverlay = ref(false)
 const overlayImageUrl = ref<string>('')
@@ -676,6 +708,111 @@ const isServerValidUrl = (url: string | null | undefined): boolean => {
   return url.startsWith('http://') || url.startsWith('https://')
 }
 
+const currentProjectCharacter = computed(() => {
+  const id = currentCharacterId.value || props.assetId
+  return editorStore.characters.find(c => c.id === id)
+})
+
+const currentProjectScene = computed(() => {
+  const id = currentSceneId.value || props.assetId
+  return editorStore.scenes.find(s => s.id === id)
+})
+
+const currentProjectProp = computed(() => {
+  const id = currentPropId.value || props.assetId
+  return (editorStore.props || []).find((p: any) => p.id === id)
+})
+
+const currentLibraryId = computed(() => {
+  if (props.assetType === 'scene') return currentProjectScene.value?.librarySceneId || null
+  if (props.assetType === 'prop') return currentProjectProp.value?.libraryPropId || null
+  return currentProjectCharacter.value?.libraryCharacterId || null
+})
+
+const canAddToLibrary = computed(() => {
+  if (!editorStore.projectId) return false
+  if (!['scene', 'prop', 'character'].includes(props.assetType || 'character')) return false
+  return !!(currentProjectScene.value || currentProjectProp.value || currentProjectCharacter.value) && !currentLibraryId.value
+})
+
+const addToLibraryLabel = computed(() => {
+  if (props.assetType === 'scene') return '加入场景库'
+  if (props.assetType === 'prop') return '加入道具库'
+  return '加入角色库'
+})
+
+const isAddingToLibrary = ref(false)
+const handleAddToLibrary = async () => {
+  if (!editorStore.projectId || !canAddToLibrary.value) return
+  const projectId = editorStore.projectId
+  const thumbnailUrl = isServerValidUrl(generatedImageUrl.value)
+    ? generatedImageUrl.value
+    : (props.assetType === 'scene'
+        ? currentProjectScene.value?.thumbnailUrl
+        : props.assetType === 'prop'
+          ? currentProjectProp.value?.thumbnailUrl
+          : currentProjectCharacter.value?.thumbnailUrl)
+
+  if (!thumbnailUrl || !isServerValidUrl(thumbnailUrl)) {
+    window.$message?.warning('请先生成或上传图片后再加入库')
+    return
+  }
+
+  isAddingToLibrary.value = true
+  try {
+    if (props.assetType === 'scene') {
+      const scene = currentProjectScene.value
+      const name = (scene as any)?.displayName || props.sceneName || '未命名场景'
+      const description = (scene as any)?.overrideDescription || aiDescription.value || ''
+      const libraryScene = await sceneApi.createLibraryScene({
+        name,
+        description,
+        thumbnailUrl
+      })
+      await api.put(`/projects/${projectId}/scenes/${scene?.id}`, {
+        librarySceneId: libraryScene.id
+      })
+      await Promise.all([editorStore.fetchScenes(), editorStore.fetchShots()])
+    } else if (props.assetType === 'prop') {
+      const prop = currentProjectProp.value
+      const name = (prop as any)?.displayName || props.propName || '未命名道具'
+      const description = (prop as any)?.overrideDescription || aiDescription.value || ''
+      const libraryProp = await propApi.createLibraryProp({
+        name,
+        description,
+        thumbnailUrl
+      })
+      await api.put(`/projects/${projectId}/props/${prop?.id}`, {
+        libraryPropId: libraryProp.id
+      })
+      await Promise.all([editorStore.fetchProps(), editorStore.fetchShots()])
+    } else {
+      const character = currentProjectCharacter.value
+      const name = (character as any)?.displayName || props.characterName || '未命名角色'
+      const description = (character as any)?.overrideDescription || aiDescription.value || ''
+      const libraryCharacter = await characterApi.createLibraryCharacter({
+        name,
+        description
+      })
+      await characterApi.updateLibraryCharacter(libraryCharacter.id, {
+        thumbnailUrl
+      })
+      await api.put(`/projects/${projectId}/characters/${character?.id}`, {
+        libraryCharacterId: libraryCharacter.id
+      })
+      await Promise.all([editorStore.fetchCharacters(), editorStore.fetchShots()])
+    }
+
+    await loadGenerationHistory()
+    window.$message?.success('已加入库')
+  } catch (error: any) {
+    console.error('[AssetEditPanel] 加入库失败:', error)
+    window.$message?.error('加入库失败: ' + (error.message || ''))
+  } finally {
+    isAddingToLibrary.value = false
+  }
+}
+
 // 合并历史记录（后端 + store中的本地记录，同名资产共享）
 const allHistory = computed(() => {
   // 根据资产类型获取对应的ID列表
@@ -866,6 +1003,7 @@ const handleHistoryImageClick = async (record: { url: string; prompt: string | n
   
   generatedImageUrl.value = record.url
   referenceImageUrl.value = record.url
+  manualPreviewUrl.value = record.url
   
   console.log('[AssetEditPanel] 更新后 generatedImageUrl:', generatedImageUrl.value)
   console.log('[AssetEditPanel] 参考图已更新:', referenceImageUrl.value)
@@ -901,43 +1039,14 @@ const handleHistoryImageClick = async (record: { url: string; prompt: string | n
         const sceneDesc = (scene as any)?.finalDescription || ''
         
         if (librarySceneId) {
-          try {
-            // 调用场景库 API 更新缩略图
-            await sceneApi.updateLibraryScene(librarySceneId, {
-              name: sceneName,
-              description: sceneDesc,
-              thumbnailUrl: record.url
-            })
-          } catch (error: any) {
-            // 如果场景库场景不存在，尝试重新创建
-            if (error.message?.includes('场景不存在') || error.message?.includes('not found')) {
-              console.log('[AssetEditPanel] 场景库场景不存在，尝试重新创建')
-              const newLibraryScene = await sceneApi.createLibraryScene({
-                name: sceneName,
-                description: sceneDesc,
-                thumbnailUrl: record.url
-              })
-              librarySceneId = newLibraryScene.id
-              // 更新项目场景的关联
-              await api.put(`/projects/${editorStore.projectId}/scenes/${sceneId}`, {
-                librarySceneId: newLibraryScene.id
-              })
-            } else {
-              throw error
-            }
-          }
-        } else {
-          // 没有场景库ID，创建一个新的场景库场景
-          console.log('[AssetEditPanel] 没有场景库ID，创建新场景')
-          const newLibraryScene = await sceneApi.createLibraryScene({
+          await sceneApi.updateLibraryScene(librarySceneId, {
             name: sceneName,
             description: sceneDesc,
             thumbnailUrl: record.url
           })
-          librarySceneId = newLibraryScene.id
-          // 更新项目场景的关联
+        } else {
           await api.put(`/projects/${editorStore.projectId}/scenes/${sceneId}`, {
-            librarySceneId: newLibraryScene.id
+            thumbnailUrl: record.url
           })
         }
         
@@ -980,43 +1089,14 @@ const handleHistoryImageClick = async (record: { url: string; prompt: string | n
         const propDesc = (prop as any)?.finalDescription || (prop as any)?.description || ''
         
         if (libraryPropId) {
-          try {
-            // 调用道具库 API 更新缩略图
-            await propApi.updateLibraryProp(libraryPropId, {
-              name: propName,
-              description: propDesc,
-              thumbnailUrl: record.url
-            })
-          } catch (error: any) {
-            // 如果道具库道具不存在，尝试重新创建
-            if (error.message?.includes('道具不存在') || error.message?.includes('not found')) {
-              console.log('[AssetEditPanel] 道具库道具不存在，尝试重新创建')
-              const newLibraryProp = await propApi.createLibraryProp({
-                name: propName,
-                description: propDesc,
-                thumbnailUrl: record.url
-              })
-              libraryPropId = newLibraryProp.id
-              // 更新项目道具的关联
-              await api.put(`/projects/${editorStore.projectId}/props/${propId}`, {
-                libraryPropId: newLibraryProp.id
-              })
-            } else {
-              throw error
-            }
-          }
-        } else {
-          // 没有道具库ID，创建一个新的道具库道具
-          console.log('[AssetEditPanel] 没有道具库ID，创建新道具')
-          const newLibraryProp = await propApi.createLibraryProp({
+          await propApi.updateLibraryProp(libraryPropId, {
             name: propName,
             description: propDesc,
             thumbnailUrl: record.url
           })
-          libraryPropId = newLibraryProp.id
-          // 更新项目道具的关联
+        } else {
           await api.put(`/projects/${editorStore.projectId}/props/${propId}`, {
-            libraryPropId: newLibraryProp.id
+            thumbnailUrl: record.url
           })
         }
         
@@ -1060,47 +1140,15 @@ const handleHistoryImageClick = async (record: { url: string; prompt: string | n
         const characterDesc = (character as any)?.finalDescription || (character as any)?.description || ''
         
         if (libraryCharacterId) {
-          try {
-            // 调用角色库 API 更新缩略图
-            await characterApi.updateLibraryCharacter(libraryCharacterId, {
-              name: characterName,
-              description: characterDesc,
-              thumbnailUrl: record.url
-            })
-          } catch (error: any) {
-            // 如果角色库角色不存在，尝试重新创建
-            if (error.message?.includes('角色不存在') || error.message?.includes('not found')) {
-              console.log('[AssetEditPanel] 角色库角色不存在，尝试重新创建')
-              // 创建新的角色库角色
-              const newLibraryChar = await characterApi.createLibraryCharacter({
-                name: characterName,
-                description: characterDesc,
-                thumbnailUrl: record.url
-              })
-              libraryCharacterId = newLibraryChar.id
-              // 更新项目角色的关联
-              await api.put(`/projects/${editorStore.projectId}/characters/${charId}`, {
-                libraryCharacterId: newLibraryChar.id
-              })
-              console.log('[AssetEditPanel] 已重新创建角色库角色:', newLibraryChar.id)
-            } else {
-              throw error
-            }
-          }
-        } else {
-          // 没有角色库ID，创建一个新的角色库角色
-          console.log('[AssetEditPanel] 没有角色库ID，创建新角色')
-          const newLibraryChar = await characterApi.createLibraryCharacter({
+          await characterApi.updateLibraryCharacter(libraryCharacterId, {
             name: characterName,
             description: characterDesc,
             thumbnailUrl: record.url
           })
-          libraryCharacterId = newLibraryChar.id
-          // 更新项目角色的关联
+        } else {
           await api.put(`/projects/${editorStore.projectId}/characters/${charId}`, {
-            libraryCharacterId: newLibraryChar.id
+            thumbnailUrl: record.url
           })
-          console.log('[AssetEditPanel] 已创建并关联角色库角色:', newLibraryChar.id)
         }
         
         // 刷新角色列表和分镜数据
@@ -1176,12 +1224,25 @@ const handleDeleteHistory = async (record: any) => {
 }
 
 // 上传参考图
-const handleReferenceImageUpload = (event: Event) => {
+const handleReferenceImageUpload = async (event: Event) => {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (file) {
     referenceImage.value = file
-    referenceImageUrl.value = URL.createObjectURL(file)
+    const previewUrl = URL.createObjectURL(file)
+    referenceImageUrl.value = previewUrl
+    isUploadingReference.value = true
+    try {
+      const response = await uploadApi.upload(file, 'image')
+      referenceImageUrl.value = response.url
+      console.log('[AssetEditPanel] 参考图上传成功:', response.url)
+    } catch (error) {
+      console.error('[AssetEditPanel] 参考图上传失败:', error)
+      referenceImageUrl.value = previewUrl
+      window.$message?.error('参考图上传失败，请重试')
+    } finally {
+      isUploadingReference.value = false
+    }
   }
 }
 
@@ -1195,6 +1256,7 @@ const triggerFileInput = () => {
 const clearReferenceImage = () => {
   referenceImage.value = null
   referenceImageUrl.value = ''
+  isUploadingReference.value = false
   const input = document.getElementById('reference-image-input') as HTMLInputElement
   if (input) {
     input.value = ''
@@ -1208,6 +1270,11 @@ const isGenerating = ref(false)
 const handleAIGenerate = async () => {
   if (!aiDescription.value.trim()) {
     window.$message?.warning('请填写描述后再生成')
+    return
+  }
+
+  if (isUploadingReference.value) {
+    window.$message?.info('参考图上传中，请稍候')
     return
   }
   
@@ -1259,19 +1326,12 @@ const handleCharacterGenerate = async () => {
     const characterName = currentCharacterName.value || '新角色'
     console.log('[AssetEditPanel] 开始创建角色:', characterName)
     
-    // 1. 先在角色库创建角色
-    const libraryCharacter = await characterApi.createLibraryCharacter({
-      name: characterName,
-      description: aiDescription.value
+    // 1. 创建项目内自定义角色（不加入角色库）
+    const projectCharacter = await api.post(`/projects/${editorStore.projectId}/characters/custom`, {
+      displayName: characterName,
+      overrideDescription: aiDescription.value
     })
-    console.log('[AssetEditPanel] 角色库角色创建成功:', libraryCharacter)
-    
-    // 2. 将角色引用到项目
-    const projectCharacter = await api.post(`/projects/${editorStore.projectId}/characters`, {
-      libraryCharacterId: libraryCharacter.id,
-      displayName: characterName
-    })
-    console.log('[AssetEditPanel] 角色引用到项目成功:', projectCharacter)
+    console.log('[AssetEditPanel] 项目自定义角色创建成功:', projectCharacter)
     
     targetCharacterId = projectCharacter.id
   }
@@ -1282,12 +1342,15 @@ const handleCharacterGenerate = async () => {
   }
   editorStore.markAssetGenerating('character', targetCharacterId)
   try {
+    const referenceUrl = isServerValidUrl(referenceImageUrl.value) ? referenceImageUrl.value : undefined
     // 3. 调用图片生成API
     const response = await generationApi.generateSingleCharacter(
       editorStore.projectId!,
       targetCharacterId,
       {
-        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9',
+        customPrompt: aiDescription.value,
+        referenceImageUrl: referenceUrl
       }
     )
     
@@ -1320,28 +1383,21 @@ const handleSceneGenerate = async () => {
     }
     console.log('[AssetEditPanel] 为现有场景生成图片:', targetSceneId)
     
-    // 更新场景描述
+    // 更新场景覆盖描述
     await api.put(`/projects/${editorStore.projectId}/scenes/${targetSceneId}`, {
-      description: aiDescription.value
+      overrideDescription: aiDescription.value
     })
   } else {
     // 创建新场景
     const sceneName = currentSceneName.value || '新场景'
     console.log('[AssetEditPanel] 开始创建场景:', sceneName)
     
-    // 1. 先在场景库创建场景
-    const libraryScene = await sceneApi.createLibraryScene({
-      name: sceneName,
-      description: aiDescription.value
+    // 1. 创建项目内自定义场景（不加入场景库）
+    const projectScene = await api.post(`/projects/${editorStore.projectId}/scenes/custom`, {
+      displayName: sceneName,
+      overrideDescription: aiDescription.value
     })
-    console.log('[AssetEditPanel] 场景库场景创建成功:', libraryScene)
-    
-    // 2. 将场景引用到项目
-    const projectScene = await api.post(`/projects/${editorStore.projectId}/scenes`, {
-      librarySceneId: libraryScene.id,
-      displayName: sceneName
-    })
-    console.log('[AssetEditPanel] 场景引用到项目成功:', projectScene)
+    console.log('[AssetEditPanel] 项目自定义场景创建成功:', projectScene)
     
     targetSceneId = projectScene.id
     currentSceneId.value = targetSceneId
@@ -1363,12 +1419,15 @@ const handleSceneGenerate = async () => {
   }
   editorStore.markAssetGenerating('scene', targetSceneId)
   try {
+    const referenceUrl = isServerValidUrl(referenceImageUrl.value) ? referenceImageUrl.value : undefined
     // 3. 调用场景图片生成API
     const response = await generationApi.generateSingleScene(
       editorStore.projectId!,
       targetSceneId,
       {
-        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9',
+        customPrompt: aiDescription.value,
+        referenceImageUrl: referenceUrl
       }
     )
     
@@ -1404,28 +1463,21 @@ const handlePropGenerate = async () => {
     }
     console.log('[AssetEditPanel] 为现有道具生成图片:', targetPropId)
     
-    // 更新道具描述
+    // 更新道具覆盖描述
     await api.put(`/projects/${editorStore.projectId}/props/${targetPropId}`, {
-      description: aiDescription.value
+      overrideDescription: aiDescription.value
     })
   } else {
     // 创建新道具
     const propName = currentPropName.value || '新道具'
     console.log('[AssetEditPanel] 开始创建道具:', propName)
     
-    // 1. 先在道具库创建道具
-    const libraryProp = await propApi.createLibraryProp({
-      name: propName,
-      description: aiDescription.value
+    // 1. 创建项目内自定义道具（不加入道具库）
+    const projectProp = await api.post(`/projects/${editorStore.projectId}/props/custom`, {
+      displayName: propName,
+      overrideDescription: aiDescription.value
     })
-    console.log('[AssetEditPanel] 道具库道具创建成功:', libraryProp)
-    
-    // 2. 将道具引用到项目
-    const projectProp = await propApi.addPropToProject(editorStore.projectId!, {
-      libraryPropId: libraryProp.id,
-      displayName: propName
-    })
-    console.log('[AssetEditPanel] 道具引用到项目成功:', projectProp)
+    console.log('[AssetEditPanel] 项目自定义道具创建成功:', projectProp)
     
     targetPropId = projectProp.id
     currentPropId.value = targetPropId
@@ -1447,12 +1499,15 @@ const handlePropGenerate = async () => {
   }
   editorStore.markAssetGenerating('prop', targetPropId)
   try {
+    const referenceUrl = isServerValidUrl(referenceImageUrl.value) ? referenceImageUrl.value : undefined
     // 3. 调用道具图片生成API
     const response = await generationApi.generateSingleProp(
       editorStore.projectId!,
       targetPropId,
       {
-        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9'
+        aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9',
+        customPrompt: aiDescription.value,
+        referenceImageUrl: referenceUrl
       }
     )
     
@@ -1750,21 +1805,17 @@ const handleLocalImageUpload = async (event: Event) => {
         const sceneName = currentSceneName.value || props.sceneName || '新场景'
         const sceneDesc = aiDescription.value || ''
         
-        // 创建场景库场景
-        const libraryScene = await sceneApi.createLibraryScene({
-          name: sceneName,
-          description: sceneDesc,
-          thumbnailUrl: ossUrl
-        })
-        
-        // 引用到项目
-        const projectScene = await api.post(`/projects/${editorStore.projectId}/scenes`, {
-          librarySceneId: libraryScene.id,
-          displayName: sceneName
+        const projectScene = await api.post(`/projects/${editorStore.projectId}/scenes/custom`, {
+          displayName: sceneName,
+          overrideDescription: sceneDesc
         })
         
         assetId = projectScene.id
         currentSceneId.value = assetId
+
+        await api.put(`/projects/${editorStore.projectId}/scenes/${assetId}`, {
+          thumbnailUrl: ossUrl
+        })
         
         // 如果有关联的分镜ID，自动绑定
         if (props.shotId) {
@@ -1784,21 +1835,17 @@ const handleLocalImageUpload = async (event: Event) => {
         const propName = currentPropName.value || props.propName || '新道具'
         const propDesc = aiDescription.value || ''
         
-        // 创建道具库道具
-        const libraryProp = await propApi.createLibraryProp({
-          name: propName,
-          description: propDesc,
-          thumbnailUrl: ossUrl
-        })
-        
-        // 引用到项目
-        const projectProp = await propApi.addPropToProject(editorStore.projectId, {
-          libraryPropId: libraryProp.id,
-          displayName: propName
+        const projectProp = await api.post(`/projects/${editorStore.projectId}/props/custom`, {
+          displayName: propName,
+          overrideDescription: propDesc
         })
         
         assetId = projectProp.id
         currentPropId.value = assetId
+
+        await api.put(`/projects/${editorStore.projectId}/props/${assetId}`, {
+          thumbnailUrl: ossUrl
+        })
         
         // 如果有关联的分镜ID，自动绑定
         if (props.shotId) {
@@ -1818,21 +1865,17 @@ const handleLocalImageUpload = async (event: Event) => {
         const characterName = currentCharacterName.value || props.characterName || '新角色'
         const characterDesc = aiDescription.value || ''
         
-        // 创建角色库角色
-        const libraryChar = await characterApi.createLibraryCharacter({
-          name: characterName,
-          description: characterDesc,
-          thumbnailUrl: ossUrl
-        })
-        
-        // 引用到项目
-        const projectChar = await api.post(`/projects/${editorStore.projectId}/characters`, {
-          libraryCharacterId: libraryChar.id,
-          displayName: characterName
+        const projectChar = await api.post(`/projects/${editorStore.projectId}/characters/custom`, {
+          displayName: characterName,
+          overrideDescription: characterDesc
         })
         
         assetId = projectChar.id
         currentCharacterId.value = assetId
+
+        await api.put(`/projects/${editorStore.projectId}/characters/${assetId}`, {
+          thumbnailUrl: ossUrl
+        })
         
         await Promise.all([
           editorStore.fetchCharacters(),
@@ -1857,13 +1900,8 @@ const handleLocalImageUpload = async (event: Event) => {
             thumbnailUrl: ossUrl
           })
         } else {
-          const newLibraryScene = await sceneApi.createLibraryScene({
-            name: sceneName,
-            description: sceneDesc,
-            thumbnailUrl: ossUrl
-          })
           await api.put(`/projects/${editorStore.projectId}/scenes/${assetId}`, {
-            librarySceneId: newLibraryScene.id
+            thumbnailUrl: ossUrl
           })
         }
         await editorStore.fetchScenes()
@@ -1881,13 +1919,8 @@ const handleLocalImageUpload = async (event: Event) => {
             thumbnailUrl: ossUrl
           })
         } else {
-          const newLibraryProp = await propApi.createLibraryProp({
-            name: propName,
-            description: propDesc,
-            thumbnailUrl: ossUrl
-          })
           await api.put(`/projects/${editorStore.projectId}/props/${assetId}`, {
-            libraryPropId: newLibraryProp.id
+            thumbnailUrl: ossUrl
           })
         }
         await editorStore.fetchProps()
@@ -1905,13 +1938,8 @@ const handleLocalImageUpload = async (event: Event) => {
             thumbnailUrl: ossUrl
           })
         } else {
-          const newLibraryChar = await characterApi.createLibraryCharacter({
-            name: characterName,
-            description: characterDesc,
-            thumbnailUrl: ossUrl
-          })
           await api.put(`/projects/${editorStore.projectId}/characters/${assetId}`, {
-            libraryCharacterId: newLibraryChar.id
+            thumbnailUrl: ossUrl
           })
         }
         await editorStore.fetchCharacters()
@@ -2288,36 +2316,51 @@ const handleCopyImage = async () => {
           </select>
         </div>
 
-        <!-- AI生成按钮 -->
-        <button
-          @click="handleAIGenerate"
-          :disabled="isGenerating || isParsingCharacter"
-          :class="[
-            'px-8 py-3 rounded font-medium text-sm transition-all flex items-center gap-2',
-            isGenerating || isParsingCharacter
-              ? 'bg-gray-500 cursor-not-allowed opacity-60'
-              : 'bg-gray-800 text-white hover:opacity-90'
-          ]"
-        >
-          <template v-if="isGenerating">
-            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            生成中...
-          </template>
-          <template v-else>
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-            </svg>
-            AI生成
-          </template>
-        </button>
+        <div class="flex items-center gap-3">
+          <!-- AI生成按钮 -->
+          <button
+            @click="handleAIGenerate"
+            :disabled="isGenerating || isParsingCharacter"
+            :class="[
+              'px-8 py-3 rounded font-medium text-sm transition-all flex items-center gap-2',
+              isGenerating || isParsingCharacter
+                ? 'bg-gray-500 cursor-not-allowed opacity-60'
+                : 'bg-gray-800 text-white hover:opacity-90'
+            ]"
+          >
+            <template v-if="isGenerating">
+              <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              生成中...
+            </template>
+            <template v-else>
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+              </svg>
+              AI生成
+            </template>
+          </button>
+        </div>
       </div>
 
       <!-- 历史记录 -->
       <div class="border-t border-border-default pt-6">
-        <h4 class="text-text-primary text-sm font-medium mb-4">历史记录</h4>
+        <div class="flex items-center justify-between mb-4">
+          <h4 class="text-text-primary text-sm font-medium">历史记录</h4>
+          <button
+            v-if="canAddToLibrary"
+            @click="handleAddToLibrary"
+            :disabled="isAddingToLibrary"
+            :class="[
+              'px-4 py-2 rounded font-medium text-xs transition-all',
+              isAddingToLibrary ? 'bg-gray-500 cursor-not-allowed opacity-60' : 'bg-bg-subtle text-text-secondary hover:bg-bg-hover'
+            ]"
+          >
+            {{ isAddingToLibrary ? '加入中...' : addToLibraryLabel }}
+          </button>
+        </div>
 
         <div v-if="loadingHistory" class="text-center py-8">
           <div class="inline-block w-6 h-6 border-2 border-gray-900 border-t-transparent rounded animate-spin"></div>

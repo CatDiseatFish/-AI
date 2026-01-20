@@ -45,6 +45,8 @@ interface EditorState {
     shots: boolean
     videos: boolean
   }
+  // 每个分镜的视频缩略图（来自前端生成历史，用于在分镜表中展示选中视频缩略图）
+  shotVideoThumbnails: Record<number, string | null>
 }
 
 export const useEditorStore = defineStore('editor', {
@@ -80,6 +82,7 @@ export const useEditorStore = defineStore('editor', {
       shots: false,
       videos: false,
     },
+    shotVideoThumbnails: {},
   }),
 
   getters: {
@@ -96,6 +99,36 @@ export const useEditorStore = defineStore('editor', {
   },
 
   actions: {
+    setShotVideoThumbnail(shotId: number, url: string | null) {
+      this.shotVideoThumbnails = {
+        ...this.shotVideoThumbnails,
+        [shotId]: url,
+      }
+      this.saveShotVideoThumbnails()
+    },
+
+    loadShotVideoThumbnails() {
+      if (!this.projectId) return
+      const key = `ai_story_studio_project_${this.projectId}_video_thumbs`
+      try {
+        const stored = localStorage.getItem(key)
+        if (stored) {
+          this.shotVideoThumbnails = JSON.parse(stored)
+        }
+      } catch (e) {
+        console.error('[EditorStore] 加载视频缩略图缓存失败:', e)
+      }
+    },
+
+    saveShotVideoThumbnails() {
+      if (!this.projectId) return
+      const key = `ai_story_studio_project_${this.projectId}_video_thumbs`
+      try {
+        localStorage.setItem(key, JSON.stringify(this.shotVideoThumbnails))
+      } catch (e) {
+        console.error('[EditorStore] 保存视频缩略图缓存失败:', e)
+      }
+    },
     isAssetGenerating(type: 'character' | 'scene' | 'prop' | 'shot' | 'video', id: number) {
       return this.generatingAssets[type].has(id)
     },
@@ -108,14 +141,41 @@ export const useEditorStore = defineStore('editor', {
       this.generatingAssets[type].delete(id)
     },
 
-    async trackBatchJob(jobId: number, onComplete: () => Promise<void>, onFinally: () => void) {
+    async trackBatchJob(
+      jobId: number,
+      onComplete: () => Promise<void>,
+      onFinally: () => void,
+      options?: {
+        /** 运行中是否定时刷新分镜数据（用于批量生成时“生成一条刷新一次”的体验） */
+        refreshShotsWhileRunning?: boolean
+        /** 刷新间隔（轮询周期内只会触发一次），默认 3000ms */
+        refreshIntervalMs?: number
+      }
+    ) {
       const maxAttempts = 120
       let attempts = 0
+      const refreshIntervalMs = options?.refreshIntervalMs ?? 3000
+      let lastRefreshAt = 0
       try {
         while (attempts < maxAttempts) {
           await new Promise(resolve => setTimeout(resolve, 3000))
           attempts++
           const status = await jobApi.getJobStatus(jobId)
+
+          // 运行中增量刷新：每次轮询周期内最多刷新一次，避免过度请求
+          if (options?.refreshShotsWhileRunning && this.projectId) {
+            const now = Date.now()
+            if (now - lastRefreshAt >= refreshIntervalMs) {
+              lastRefreshAt = now
+              try {
+                await this.fetchShots()
+              } catch (e) {
+                // 刷新失败不影响主轮询流程
+                console.warn('[EditorStore] Failed to refresh shots while running:', e)
+              }
+            }
+          }
+
           if (status.status === 'COMPLETED' || status.status === 'SUCCEEDED') {
             await onComplete()
             return
@@ -139,6 +199,7 @@ export const useEditorStore = defineStore('editor', {
       try {
         // 加载本地历史记录
         this.loadLocalImageHistory()
+        this.loadShotVideoThumbnails()
         // 清理过期历史记录
         this.cleanExpiredHistory()
 
@@ -286,7 +347,12 @@ export const useEditorStore = defineStore('editor', {
         // 保存原始剧本文本
         this.originalScript = fullScript
         await shotApi.parseAndCreateShots(this.projectId, fullScript, signal)
-        await this.fetchShots()
+        await Promise.all([
+          this.fetchShots(),
+          this.fetchCharacters(),
+          this.fetchScenes(),
+          this.fetchProps(),
+        ])
         this.saveHistory()
         window.$message?.success('AI解析完成，分镜已创建')
       } catch (error: any) {
@@ -440,6 +506,8 @@ export const useEditorStore = defineStore('editor', {
               window.$message?.success('批量生成分镜图完成')
             },
             () => { this.batchGenerating.shots = false }
+            ,
+            { refreshShotsWhileRunning: true, refreshIntervalMs: 3000 }
           )
         } else {
           this.batchGenerating.shots = false
@@ -475,6 +543,8 @@ export const useEditorStore = defineStore('editor', {
               window.$message?.success('批量生成视频完成')
             },
             () => { this.batchGenerating.videos = false }
+            ,
+            { refreshShotsWhileRunning: true, refreshIntervalMs: 3000 }
           )
         } else {
           this.batchGenerating.videos = false
@@ -570,6 +640,16 @@ export const useEditorStore = defineStore('editor', {
         console.log('[EditorStore] Generating shot image:', shotId, params)
         const response = await generationApi.generateSingleShot(this.projectId, shotId, params)
         window.$message?.success(`分镜图生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchShots()
+            },
+            () => {},
+            { refreshShotsWhileRunning: true, refreshIntervalMs: 3000 }
+          )
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to generate shot image:', error)
@@ -590,6 +670,16 @@ export const useEditorStore = defineStore('editor', {
         console.log('[EditorStore] Generating video:', shotId, params)
         const response = await generationApi.generateSingleVideo(this.projectId, shotId, params)
         window.$message?.success(`视频生成任务已提交 (Job ID: ${response.jobId})`)
+        if (response.jobId) {
+          this.trackBatchJob(
+            response.jobId,
+            async () => {
+              await this.fetchShots()
+            },
+            () => {},
+            { refreshShotsWhileRunning: true, refreshIntervalMs: 3000 }
+          )
+        }
         return response
       } catch (error: any) {
         console.error('[EditorStore] Failed to generate video:', error)
@@ -1009,6 +1099,7 @@ export const useEditorStore = defineStore('editor', {
       this.historyIndex = -1
       // Clear local image history
       this.localImageHistory = {}
+      this.shotVideoThumbnails = {}
     },
   },
 })

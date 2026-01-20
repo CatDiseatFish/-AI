@@ -2,6 +2,7 @@ package com.ym.ai_story_studio_server.controller;
 
 import com.ym.ai_story_studio_server.common.Result;
 import com.ym.ai_story_studio_server.dto.character.AddCharacterToProjectRequest;
+import com.ym.ai_story_studio_server.dto.character.CreateProjectCharacterRequest;
 import com.ym.ai_story_studio_server.dto.character.ProjectCharacterVO;
 import com.ym.ai_story_studio_server.dto.character.ReplaceCharacterRequest;
 import com.ym.ai_story_studio_server.dto.character.UpdateProjectCharacterRequest;
@@ -59,6 +60,19 @@ public class ProjectCharacterController {
         log.info("引用角色到项目, userId: {}, projectId: {}, libraryCharacterId: {}",
                 userId, projectId, request.libraryCharacterId());
         ProjectCharacterVO character = projectCharacterService.addCharacterToProject(userId, projectId, request);
+        return Result.success(character);
+    }
+
+    /**
+     * 创建项目内自定义角色（不加入角色库）
+     */
+    @PostMapping("/custom")
+    public Result<ProjectCharacterVO> createCustomCharacter(
+            @PathVariable("projectId") Long projectId,
+            @Valid @RequestBody CreateProjectCharacterRequest request) {
+        Long userId = UserContext.getUserId();
+        log.info("创建项目内自定义角色, userId: {}, projectId: {}", userId, projectId);
+        ProjectCharacterVO character = projectCharacterService.createCustomCharacter(userId, projectId, request);
         return Result.success(character);
     }
 

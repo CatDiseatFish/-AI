@@ -63,6 +63,7 @@ public class UserController {
         return Result.success();
     }
 
+
     /**
      * 上传用户头像
      * <p>需要JWT认证，限制5MB以内的图片文件

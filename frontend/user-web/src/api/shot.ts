@@ -97,7 +97,7 @@ export const shotApi = {
 
   /**
    * AI解析剧本并批量创建分镜
-   * 注意：AI解析需要较长时间，设置2分钟超时
+   * 注意：AI解析需要较长时间，设置3分钟超时
    *
    * @param projectId 项目ID
    * @param fullScript 完整剧本文本
@@ -106,7 +106,7 @@ export const shotApi = {
    */
   async parseAndCreateShots(projectId: number, fullScript: string, signal?: AbortSignal): Promise<StoryboardShotVO[]> {
     return api.post(`/projects/${projectId}/shots/parse-script`, { fullScript }, {
-      timeout: 120000,  // 2分钟超时，AI解析需要更长时间
+      timeout: 180000,  // 3分钟超时，AI解析需要更长时间
       signal
     })
   },

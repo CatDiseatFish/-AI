@@ -87,4 +87,9 @@ public class SingleShotVideoMessage implements Serializable {
      * 道具列表(可选)
      */
     private List<AssetResource> props;
+
+    /**
+     * 临时API密钥(可选)
+     */
+    private String apiKey;
 }

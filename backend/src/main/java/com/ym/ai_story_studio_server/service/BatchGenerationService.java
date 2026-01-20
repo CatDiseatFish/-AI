@@ -409,21 +409,45 @@ public class BatchGenerationService {
      * @throws BusinessException 当项目不存在、无权限或角色ID无效时抛出
      */
     public BatchGenerateResponse generateSingleCharacter(Long projectId, Long characterId,
-                                                          String aspectRatio, String model) {
+                                                          String aspectRatio, String model, String customPrompt, List<String> referenceImageUrls) {
         Long userId = UserContext.getUserId();
-        log.info("单个角色生成 - userId: {}, projectId: {}, characterId: {}",
-                userId, projectId, characterId);
+        log.info("单个角色生成 - userId: {}, projectId: {}, characterId: {}, customPrompt: {}, referenceImageUrls: {}",
+                userId, projectId, characterId,
+                customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls != null ? referenceImageUrls.size() : 0);
 
-        // 复用批量生成逻辑
-        BatchGenerateRequest request = new BatchGenerateRequest(
+        Project project = validateProjectAccess(userId, projectId);
+        validateProjectCharacterIds(projectId, java.util.List.of(characterId));
+
+        String finalModel = resolveModel(project, model, "characterImageModel", aiProperties.getImage().getDefaultModel());
+
+        Job job = createBatchJob(userId, projectId, "BATCH_GEN_CHAR_IMG", 1);
+        log.info("单个角色生成任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", aspectRatio);
+        metaData.put("targetType", "character");
+        metaData.put("targetId", characterId);
+        if (customPrompt != null && !customPrompt.isBlank()) {
+            metaData.put("customPrompt", customPrompt);
+        }
+        if (referenceImageUrls != null && !referenceImageUrls.isEmpty()) {
+            metaData.put("referenceImageUrls", referenceImageUrls);
+        }
+        updateJobMeta(job.getId(), metaData);
+
+        mqProducer.sendBatchCharacterImageTask(
+                job.getId(),
+                userId,
+                projectId,
                 java.util.List.of(characterId),
                 "ALL",
                 1,
                 aspectRatio,
-                model
+                finalModel
         );
 
-        return generateCharactersBatch(projectId, request);
+        return BatchGenerateResponse.pending(job.getId(), 1);
     }
 
     /**
@@ -439,21 +463,45 @@ public class BatchGenerationService {
      * @throws BusinessException 当项目不存在、无权限或场景ID无效时抛出
      */
     public BatchGenerateResponse generateSingleScene(Long projectId, Long sceneId,
-                                                      String aspectRatio, String model) {
+                                                      String aspectRatio, String model, String customPrompt, List<String> referenceImageUrls) {
         Long userId = UserContext.getUserId();
-        log.info("单个场景生成 - userId: {}, projectId: {}, sceneId: {}",
-                userId, projectId, sceneId);
+        log.info("单个场景生成 - userId: {}, projectId: {}, sceneId: {}, customPrompt: {}, referenceImageUrls: {}",
+                userId, projectId, sceneId,
+                customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls != null ? referenceImageUrls.size() : 0);
 
-        // 复用批量生成逻辑
-        BatchGenerateRequest request = new BatchGenerateRequest(
+        Project project = validateProjectAccess(userId, projectId);
+        validateProjectSceneIds(projectId, java.util.List.of(sceneId));
+
+        String finalModel = resolveModel(project, model, "sceneImageModel", aiProperties.getImage().getDefaultModel());
+
+        Job job = createBatchJob(userId, projectId, "BATCH_GEN_SCENE_IMG", 1);
+        log.info("单个场景生成任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", aspectRatio);
+        metaData.put("targetType", "scene");
+        metaData.put("targetId", sceneId);
+        if (customPrompt != null && !customPrompt.isBlank()) {
+            metaData.put("customPrompt", customPrompt);
+        }
+        if (referenceImageUrls != null && !referenceImageUrls.isEmpty()) {
+            metaData.put("referenceImageUrls", referenceImageUrls);
+        }
+        updateJobMeta(job.getId(), metaData);
+
+        mqProducer.sendBatchSceneImageTask(
+                job.getId(),
+                userId,
+                projectId,
                 java.util.List.of(sceneId),
                 "ALL",
                 1,
                 aspectRatio,
-                model
+                finalModel
         );
 
-        return generateScenesBatch(projectId, request);
+        return BatchGenerateResponse.pending(job.getId(), 1);
     }
 
     /**
@@ -521,21 +569,45 @@ public class BatchGenerationService {
      * @throws BusinessException 当项目不存在、无权限或道具ID无效时抛出
      */
     public BatchGenerateResponse generateSingleProp(Long projectId, Long propId,
-                                                      String aspectRatio, String model) {
+                                                      String aspectRatio, String model, String customPrompt, List<String> referenceImageUrls) {
         Long userId = UserContext.getUserId();
-        log.info("单个道具生成 - userId: {}, projectId: {}, propId: {}",
-                userId, projectId, propId);
+        log.info("单个道具生成 - userId: {}, projectId: {}, propId: {}, customPrompt: {}, referenceImageUrls: {}",
+                userId, projectId, propId,
+                customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls != null ? referenceImageUrls.size() : 0);
 
-        // 复用批量生成逻辑
-        BatchGenerateRequest request = new BatchGenerateRequest(
+        Project project = validateProjectAccess(userId, projectId);
+        validateProjectPropIds(projectId, java.util.List.of(propId));
+
+        String finalModel = resolveModel(project, model, "shotImageModel", aiProperties.getImage().getDefaultModel());
+
+        Job job = createBatchJob(userId, projectId, "BATCH_GEN_PROP_IMG", 1);
+        log.info("单个道具生成任务已创建 - jobId: {}", job.getId());
+        java.util.Map<String, Object> metaData = new java.util.HashMap<>();
+        metaData.put("model", finalModel);
+        metaData.put("aspectRatio", aspectRatio);
+        metaData.put("targetType", "prop");
+        metaData.put("targetId", propId);
+        if (customPrompt != null && !customPrompt.isBlank()) {
+            metaData.put("customPrompt", customPrompt);
+        }
+        if (referenceImageUrls != null && !referenceImageUrls.isEmpty()) {
+            metaData.put("referenceImageUrls", referenceImageUrls);
+        }
+        updateJobMeta(job.getId(), metaData);
+
+        mqProducer.sendBatchPropImageTask(
+                job.getId(),
+                userId,
+                projectId,
                 java.util.List.of(propId),
                 "ALL",
                 1,
                 aspectRatio,
-                model
+                finalModel
         );
 
-        return generatePropsBatch(projectId, request);
+        return BatchGenerateResponse.pending(job.getId(), 1);
     }
 
     /**

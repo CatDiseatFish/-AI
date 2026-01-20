@@ -60,11 +60,15 @@ export const generationApi = {
     params: {
       aspectRatio?: '1:1' | '16:9' | '9:16' | '21:9'
       model?: string
+      customPrompt?: string
+      referenceImageUrl?: string
     },
   ): Promise<BatchGenerateResponse> {
     const queryParams = new URLSearchParams()
     if (params.aspectRatio) queryParams.append('aspectRatio', params.aspectRatio)
     if (params.model) queryParams.append('model', params.model)
+    if (params.customPrompt) queryParams.append('customPrompt', params.customPrompt)
+    if (params.referenceImageUrl) queryParams.append('referenceImageUrl', params.referenceImageUrl)
     const queryString = queryParams.toString()
     return api.post(`/projects/${projectId}/generate/character/${characterId}${queryString ? '?' + queryString : ''}`)
   },
@@ -78,9 +82,17 @@ export const generationApi = {
     params: {
       aspectRatio?: '1:1' | '16:9' | '9:16' | '21:9'
       model?: string
+      customPrompt?: string
+      referenceImageUrl?: string
     },
   ): Promise<BatchGenerateResponse> {
-    return api.post(`/projects/${projectId}/generate/scene/${sceneId}`, params)
+    const queryParams = new URLSearchParams()
+    if (params.aspectRatio) queryParams.append('aspectRatio', params.aspectRatio)
+    if (params.model) queryParams.append('model', params.model)
+    if (params.customPrompt) queryParams.append('customPrompt', params.customPrompt)
+    if (params.referenceImageUrl) queryParams.append('referenceImageUrl', params.referenceImageUrl)
+    const queryString = queryParams.toString()
+    return api.post(`/projects/${projectId}/generate/scene/${sceneId}${queryString ? '?' + queryString : ''}`)
   },
 
   /**
@@ -129,9 +141,17 @@ export const generationApi = {
     params: {
       aspectRatio?: '1:1' | '16:9' | '9:16' | '21:9'
       model?: string
+      customPrompt?: string
+      referenceImageUrl?: string
     },
   ): Promise<BatchGenerateResponse> {
-    return api.post(`/projects/${projectId}/generate/prop/${propId}`, params)
+    const queryParams = new URLSearchParams()
+    if (params.aspectRatio) queryParams.append('aspectRatio', params.aspectRatio)
+    if (params.model) queryParams.append('model', params.model)
+    if (params.customPrompt) queryParams.append('customPrompt', params.customPrompt)
+    if (params.referenceImageUrl) queryParams.append('referenceImageUrl', params.referenceImageUrl)
+    const queryString = queryParams.toString()
+    return api.post(`/projects/${projectId}/generate/prop/${propId}${queryString ? '?' + queryString : ''}`)
   },
 }
 

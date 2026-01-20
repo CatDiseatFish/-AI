@@ -3,6 +3,7 @@ package com.ym.ai_story_studio_server.mq;
 import com.ym.ai_story_studio_server.dto.ai.ShotVideoGenerateRequest.AssetResource;
 import com.ym.ai_story_studio_server.mq.BatchTaskMessage;
 import com.ym.ai_story_studio_server.mq.TextParsingMessage;
+import com.ym.ai_story_studio_server.util.UserContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -39,8 +40,9 @@ public class MQProducer {
      */
     public void sendBatchShotImageTask(Long jobId, Long userId, Long projectId, List<Long> shotIds,
                                        String mode, Integer countPerItem, String aspectRatio, String model) {
+        String apiKey = UserContext.getApiKey();
         BatchTaskMessage message = new BatchTaskMessage(
-                jobId, userId, projectId, shotIds, mode, countPerItem, aspectRatio, model
+                jobId, userId, projectId, shotIds, mode, countPerItem, aspectRatio, model, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, shotCount: {}", 
@@ -69,8 +71,9 @@ public class MQProducer {
      */
     public void sendSingleShotImageTask(Long jobId, Long userId, Long projectId, Long shotId,
                                         String aspectRatio, String model, String customPrompt, List<String> referenceImageUrls) {
+        String apiKey = UserContext.getApiKey();
         SingleShotImageMessage message = new SingleShotImageMessage(
-                jobId, userId, projectId, shotId, aspectRatio, model, customPrompt, referenceImageUrls
+                jobId, userId, projectId, shotId, aspectRatio, model, customPrompt, referenceImageUrls, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, shotId: {}, customPrompt: {}", 
@@ -90,8 +93,9 @@ public class MQProducer {
      */
     public void sendBatchVideoTask(Long jobId, Long userId, Long projectId, List<Long> shotIds,
                                    String mode, Integer countPerItem, String aspectRatio, String model) {
+        String apiKey = UserContext.getApiKey();
         BatchTaskMessage message = new BatchTaskMessage(
-                jobId, userId, projectId, shotIds, mode, countPerItem, aspectRatio, model
+                jobId, userId, projectId, shotIds, mode, countPerItem, aspectRatio, model, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, shotCount: {}", 
@@ -111,8 +115,9 @@ public class MQProducer {
      */
     public void sendBatchCharacterImageTask(Long jobId, Long userId, Long projectId, List<Long> characterIds,
                                             String mode, Integer countPerItem, String aspectRatio, String model) {
+        String apiKey = UserContext.getApiKey();
         BatchTaskMessage message = new BatchTaskMessage(
-                jobId, userId, projectId, characterIds, mode, countPerItem, aspectRatio, model
+                jobId, userId, projectId, characterIds, mode, countPerItem, aspectRatio, model, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, characterCount: {}", 
@@ -132,8 +137,9 @@ public class MQProducer {
      */
     public void sendBatchSceneImageTask(Long jobId, Long userId, Long projectId, List<Long> sceneIds,
                                         String mode, Integer countPerItem, String aspectRatio, String model) {
+        String apiKey = UserContext.getApiKey();
         BatchTaskMessage message = new BatchTaskMessage(
-                jobId, userId, projectId, sceneIds, mode, countPerItem, aspectRatio, model
+                jobId, userId, projectId, sceneIds, mode, countPerItem, aspectRatio, model, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, sceneCount: {}", 
@@ -153,8 +159,9 @@ public class MQProducer {
      */
     public void sendBatchPropImageTask(Long jobId, Long userId, Long projectId, List<Long> propIds,
                                        String mode, Integer countPerItem, String aspectRatio, String model) {
+        String apiKey = UserContext.getApiKey();
         BatchTaskMessage message = new BatchTaskMessage(
-                jobId, userId, projectId, propIds, mode, countPerItem, aspectRatio, model
+                jobId, userId, projectId, propIds, mode, countPerItem, aspectRatio, model, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, propCount: {}", 
@@ -191,8 +198,9 @@ public class MQProducer {
                                         String referenceImageUrl, String model,
                                         AssetResource scene, java.util.List<AssetResource> characters,
                                         java.util.List<AssetResource> props) {
+        String apiKey = UserContext.getApiKey();
         SingleShotVideoMessage message = new SingleShotVideoMessage(
-                jobId, userId, projectId, shotId, prompt, aspectRatio, duration, size, referenceImageUrl, model, scene, characters, props
+                jobId, userId, projectId, shotId, prompt, aspectRatio, duration, size, referenceImageUrl, model, scene, characters, props, apiKey
         );
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, shotId: {}, promptLength: {}, hasScene: {}, characterCount: {}, propCount: {}", 
@@ -213,7 +221,8 @@ public class MQProducer {
      * 发送文本解析任务
      */
     public void sendTextParsingTask(Long jobId, Long userId, Long projectId, String rawText) {
-        TextParsingMessage message = new TextParsingMessage(jobId, userId, projectId, rawText);
+        String apiKey = UserContext.getApiKey();
+        TextParsingMessage message = new TextParsingMessage(jobId, userId, projectId, rawText, apiKey);
         
         log.info("发送消息 - 交换机: {}, 路由键: {}, jobId: {}, textLength: {}", 
                 MQConstant.EXCHANGE_BUSINESS, 

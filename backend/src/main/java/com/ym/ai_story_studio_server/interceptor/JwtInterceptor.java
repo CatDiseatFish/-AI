@@ -89,6 +89,15 @@ public class JwtInterceptor implements HandlerInterceptor {
         String authHeader = request.getHeader(jwtProperties.getHeader());
 
         if (authHeader == null || authHeader.trim().isEmpty()) {
+            // 兼容下载等场景：浏览器<a>触发的GET请求无法携带Authorization头，
+            // 允许通过 query 参数 token 传递（仅作为兜底）。
+            String tokenParam = request.getParameter("token");
+            if (tokenParam != null && !tokenParam.trim().isEmpty()) {
+                authHeader = jwtProperties.getPrefix() + tokenParam.trim();
+            }
+        }
+
+        if (authHeader == null || authHeader.trim().isEmpty()) {
             // Token缺失
             log.warn("请求 {} 未携带Token", request.getRequestURI());
             return handleAuthError(response, ResultCode.UNAUTHORIZED, "未登录或登录已过期，请先登录");
@@ -118,8 +127,14 @@ public class JwtInterceptor implements HandlerInterceptor {
             // 8. 将userId存入Request Attribute（供Controller使用）
             request.setAttribute("userId", userId);
 
-            // 9. 将userId存入UserContext（供Service层使用）
-            UserContext.setUserId(userId);
+        // 9. 将userId存入UserContext（供Service层使用）
+        UserContext.setUserId(userId);
+
+        // 10. 读取API密钥(仅本次请求有效)
+        String apiKey = request.getHeader("X-Api-Key");
+        if (apiKey != null && !apiKey.trim().isEmpty()) {
+            UserContext.setApiKey(apiKey.trim());
+        }
 
             log.debug("用户 {} 通过JWT认证，访问接口: {}", userId, request.getRequestURI());
             return true;
@@ -151,7 +166,7 @@ public class JwtInterceptor implements HandlerInterceptor {
      */
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
-        // 清理UserContext中的userId，防止内存泄漏
+        // 清理UserContext，防止内存泄漏
         UserContext.clear();
         log.debug("清理UserContext完成");
     }

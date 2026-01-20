@@ -59,4 +59,9 @@ public class BatchTaskMessage implements Serializable {
      * 模型名称
      */
     private String model;
+
+    /**
+     * 临时API密钥(仅用于本次任务)
+     */
+    private String apiKey;
 }

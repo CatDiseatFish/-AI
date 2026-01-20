@@ -274,7 +274,7 @@ public class AiProperties {
         /**
          * 最大时长（秒）
          */
-        private Integer maxDuration = 10;
+        private Integer maxDuration = 15;
 
         /**
          * 轮询间隔（毫秒）

@@ -205,7 +205,8 @@ public class AiVideoService {
                     model,
                     aspectRatio,
                     duration,
-                    userId
+                    userId,
+                    UserContext.getApiKey()
             );
 
             log.info("【诊断】异步方法调用完成(立即返回,不等待)");

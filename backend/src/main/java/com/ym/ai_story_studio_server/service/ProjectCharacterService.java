@@ -36,6 +36,8 @@ public interface ProjectCharacterService {
      */
     ProjectCharacterVO addCharacterToProject(Long userId, Long projectId, AddCharacterToProjectRequest request);
 
+    ProjectCharacterVO createCustomCharacter(Long userId, Long projectId, com.ym.ai_story_studio_server.dto.character.CreateProjectCharacterRequest request);
+
     /**
      * 更新项目内角色覆盖
      *

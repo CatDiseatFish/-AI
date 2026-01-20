@@ -182,6 +182,14 @@ const handleSceneClick = (sceneId: number) => {
 const filteredProps = computed(() => {
   let props = editorStore.props
 
+  if (propSearchQuery.value.trim()) {
+    const query = propSearchQuery.value.toLowerCase()
+    props = props.filter((p) => {
+      const name = (p.displayName || p.name || '').toLowerCase()
+      return name.includes(query)
+    })
+  }
+
   return props
 })
 
@@ -465,7 +473,7 @@ const handlePropClick = (propId: number) => {
               </div>
               <div class="flex-1 min-w-0">
                 <p class="text-center text-xs truncate text-text-secondary">
-                  {{ prop.name || prop.displayName }}
+                  {{ prop.displayName || prop.name || '未命名道具' }}
                 </p>
               </div>
             </div>

@@ -1102,6 +1102,7 @@ const handleCopyThumbnail = async (url: string) => {
       <AssetCell
         :asset="shot.video"
         label="视频"
+        :thumbnail-url="(editorStore.shotVideoThumbnails[shot.id] && editorStore.shotVideoThumbnails[shot.id]!.trim()) ? editorStore.shotVideoThumbnails[shot.id]! : undefined"
         :on-click="() => handleAssetClick('video')"
         :on-delete="shot.video.status === 'READY' ? handleDeleteVideo : undefined"
       />

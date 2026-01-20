@@ -32,6 +32,7 @@ export interface UpdateProfileRequest {
   avatarUrl?: string
 }
 
+
 // 登录响应（后端返回扁平结构）
 export interface LoginResponse {
   token: string
@@ -43,12 +44,19 @@ export interface LoginResponse {
 
 export interface SendCodeRequest {
   phone: string
+  captchaId: string
+  captchaCode: string
 }
 
 export interface LoginRequest {
   phone: string
   code: string
   inviteCode?: string
+}
+
+export interface CaptchaResponse {
+  captchaId: string
+  imageBase64: string
 }
 
 // ============== Project & Folder ==============
@@ -304,7 +312,7 @@ export interface PropLibraryVO {
 
 export interface ProjectPropVO {
   id: number
-  libraryPropId: number
+  libraryPropId: number | null
   displayName: string | null
   name: string
   description: string | null

@@ -60,6 +60,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 /**
  * MQ消息消费者
@@ -356,6 +357,8 @@ public class MQConsumer {
                     referenceImageUrls != null ? referenceImageUrls.size() : 0);
     
             // 3. 调用AI生成图片(支持参考图)
+            UserContext.setUserId(userId);
+            UserContext.setApiKey(msg.apiKey());
             VectorEngineClient.ImageApiResponse apiResponse = vectorEngineClient.generateImage(
                     prompt,
                     finalModel,
@@ -418,6 +421,8 @@ public class MQConsumer {
             log.error("单个分镜图生成失败 - shotId: {}", shotId, e);
             updateJobFailed(jobId, e.getMessage());
             throw e;
+        } finally {
+            UserContext.clear();
         }
     }
 
@@ -629,6 +634,7 @@ public class MQConsumer {
                 );
 
                 UserContext.setUserId(userId);
+                UserContext.setApiKey(msg.getApiKey());
                 try {
                     aiVideoService.generateVideo(request);
                     log.info("分镜视频生成任务已提交 - shotId: {}", shotId);
@@ -685,44 +691,19 @@ public class MQConsumer {
                 throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.SHOT_NOT_FOUND);
             }
 
-            // 2. 如果没有提供参考图，尝试从资产系统查询分镜当前图片
-            if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
-                // 查询分镜当前图片资产
-                AssetRef currentImageRef = assetRefMapper.selectOne(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AssetRef>()
-                        .eq(AssetRef::getRefType, "SHOT_IMG_CURRENT")
-                        .eq(AssetRef::getRefOwnerId, shotId)
-                );
-                
-                if (currentImageRef != null) {
-                    // 查询资产版本获取URL
-                    AssetVersion assetVersion = assetVersionMapper.selectById(currentImageRef.getAssetVersionId());
-                    if (assetVersion != null && assetVersion.getUrl() != null) {
-                        referenceImageUrl = assetVersion.getUrl();
-                        log.info("未提供参考图，使用分镜当前图片 - shotId: {}, imageUrl: {}", shotId, referenceImageUrl);
-                    }
-                }
-            }
-
             referenceImageUrl = buildMergedReferenceImageUrl(referenceImageUrl, msg);
 
-            // 3. 验证参考图是否存在
-            if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
-                String errorMsg = "该分镜尚未生成图片，请先生成分镜图片后再生成视频";
-                log.error(errorMsg + " - shotId: {}", shotId);
-                updateJobFailed(jobId, errorMsg);
-                throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, errorMsg);
-            }
-
-            // 4. 准备prompt
+            // 3. 准备prompt
             String finalPrompt = prompt != null ? prompt :
                     (shot.getScriptText() != null ? shot.getScriptText() :
                             "为分镜生成视频 - shotId: " + shotId);
 
-            log.info("调用AI生成视频 - shotId: {}, promptLength: {}, referenceImage: {}", 
-                    shotId, finalPrompt.length(), referenceImageUrl);
+            log.info("调用AI生成视频 - shotId: {}, promptLength: {}, referenceImage: {}",
+                    shotId, finalPrompt.length(),
+                    referenceImageUrl != null && !referenceImageUrl.isBlank() ? referenceImageUrl : "none");
 
             UserContext.setUserId(userId);
+            UserContext.setApiKey(msg.getApiKey());
             try {
                 VectorEngineClient.VideoApiResponse apiResponse = vectorEngineClient.generateVideo(
                         finalPrompt,
@@ -767,7 +748,8 @@ public class MQConsumer {
                         finalModel,
                         finalAspectRatio,
                         finalDuration,
-                        userId
+                        userId,
+                        msg.getApiKey()
                 );
 
                 log.info("单个分镜视频生成任务提交完成 - shotId: {}", shotId);
@@ -784,6 +766,9 @@ public class MQConsumer {
     }
 
     private String buildMergedReferenceImageUrl(String referenceImageUrl, SingleShotVideoMessage msg) {
+        if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
+            return null;
+        }
         java.util.LinkedHashMap<String, ImageMergeUtil.ImageItem> itemsByUrl = new java.util.LinkedHashMap<>();
 
         if (isValidReferenceUrl(referenceImageUrl)) {
@@ -923,6 +908,12 @@ public class MQConsumer {
                 (aiProperties.getImage().getJimengProxyEnabled() ?
                         aiProperties.getImage().getJimengModel() :
                         aiProperties.getImage().getDefaultModel());
+        Map<String, Object> jobMeta = getJobMeta(jobId);
+        String customPrompt = getCustomPromptFromMeta(jobMeta);
+        List<String> referenceImageUrls = getReferenceImageUrlsFromMeta(jobMeta);
+        log.info("角色生成任务参数 - jobId: {}, customPrompt: {}, referenceImages: {}",
+                jobId, customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls.size());
 
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
@@ -982,6 +973,9 @@ public class MQConsumer {
                 
                 // 构建优化的提示词：强调角色特征（年龄、性别、外貌、服装）
                 String prompt;
+                if (customPrompt != null && !customPrompt.isBlank()) {
+                    description = customPrompt.trim();
+                }
                 if (description != null && !description.trim().isEmpty()) {
                     // 有AI分析描述：直接使用描述作为主要提示词
                     prompt = String.format("角色立绘，%s，请根据角色形象提示词在同一画布下画出人角色的三视全身图和上半身特写图，三视全身图在左，上半身特写图在右，要求必须纯白色背景，人物比例协调，禁止出现任何字，风格为二次元动漫风格，4K，超清",
@@ -996,12 +990,13 @@ public class MQConsumer {
 
                 // 5. 调用向量引擎生成图片
                 UserContext.setUserId(userId);
+                UserContext.setApiKey(msg.getApiKey());
                 try {
                     ImageApiResponse response = vectorEngineClient.generateImage(
                             prompt,
                             finalModel,
                             finalAspectRatio,
-                            Collections.emptyList()  // 无参考图片
+                            referenceImageUrls
                     );
 
                     // 6. 解析图片结果
@@ -1125,6 +1120,12 @@ public class MQConsumer {
                 (aiProperties.getImage().getJimengProxyEnabled() ?
                         aiProperties.getImage().getJimengModel() :
                         aiProperties.getImage().getDefaultModel());
+        Map<String, Object> jobMeta = getJobMeta(jobId);
+        String customPrompt = getCustomPromptFromMeta(jobMeta);
+        List<String> referenceImageUrls = getReferenceImageUrlsFromMeta(jobMeta);
+        log.info("场景生成任务参数 - jobId: {}, customPrompt: {}, referenceImages: {}",
+                jobId, customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls.size());
 
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
@@ -1175,19 +1176,26 @@ public class MQConsumer {
                 }
 
                 // 5. 构建提示词：使用场景描述生成场景图
-                String prompt = String.format("纯场景背景图，%s，%s，2D动漫风格，高质量高清，画质细腻，空无一人的场景，禁止出现任何人物、角色、人影、动物，只有纯背景环境",
-                        sceneName, description != null ? description : "");
+                String prompt;
+                if (customPrompt != null && !customPrompt.isBlank()) {
+                    prompt = String.format("纯场景背景图，%s，2D动漫风格，高质量高清，画质细腻，空无一人的场景，禁止出现任何人物、角色、人影、动物，只有纯背景环境",
+                            customPrompt.trim());
+                } else {
+                    prompt = String.format("纯场景背景图，%s，%s，2D动漫风格，高质量高清，画质细腻，空无一人的场景，禁止出现任何人物、角色、人影、动物，只有纯背景环境",
+                            sceneName, description != null ? description : "");
+                }
 
                 log.info("生成场景图片 - projectSceneId: {}, name: {}, prompt: {}", projectSceneId, sceneName, prompt);
 
                 // 6. 调用向量引擎生成图片
                 UserContext.setUserId(userId);
+                UserContext.setApiKey(msg.getApiKey());
                 try {
                     ImageApiResponse response = vectorEngineClient.generateImage(
                             prompt,
                             finalModel,
                             finalAspectRatio,
-                            Collections.emptyList()  // 无参考图片
+                            referenceImageUrls
                     );
 
                     // 7. 解析图片结果
@@ -1288,6 +1296,12 @@ public class MQConsumer {
                 (aiProperties.getImage().getJimengProxyEnabled() ?
                         aiProperties.getImage().getJimengModel() :
                         aiProperties.getImage().getDefaultModel());
+        Map<String, Object> jobMeta = getJobMeta(jobId);
+        String customPrompt = getCustomPromptFromMeta(jobMeta);
+        List<String> referenceImageUrls = getReferenceImageUrlsFromMeta(jobMeta);
+        log.info("道具生成任务参数 - jobId: {}, customPrompt: {}, referenceImages: {}",
+                jobId, customPrompt != null ? "自定义" : "默认",
+                referenceImageUrls.size());
 
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
@@ -1310,37 +1324,54 @@ public class MQConsumer {
                     return false;
                 }
 
-                // 2. 查询道具库中的道具
-                PropLibrary prop = propLibraryMapper.selectById(projectProp.getLibraryPropId());
-                if (prop == null) {
-                    log.warn("道具库道具不存在 - libraryPropId: {}", projectProp.getLibraryPropId());
-                    return false;
+                boolean isCustomProp = projectProp.getLibraryPropId() == null;
+                PropLibrary prop = null;
+                if (!isCustomProp) {
+                    prop = propLibraryMapper.selectById(projectProp.getLibraryPropId());
+                    if (prop == null) {
+                        log.warn("道具库道具不存在 - libraryPropId: {}", projectProp.getLibraryPropId());
+                        return false;
+                    }
                 }
 
                 // 3. MISSING模式：检查是否已有图片
-                if ("MISSING".equals(msg.getMode()) && prop.getThumbnailUrl() != null) {
-                    log.info("MISSING模式 - 道具已有图片,跳过 - propId: {}", prop.getId());
-                    return true;
+                if ("MISSING".equals(msg.getMode())) {
+                    if (!isCustomProp && prop != null && prop.getThumbnailUrl() != null) {
+                        log.info("MISSING模式 - 道具已有图片,跳过 - propId: {}", prop.getId());
+                        return true;
+                    }
+                    if (isCustomProp) {
+                        String existingUrl = getLatestPropThumbnailUrl(projectProp.getId());
+                        if (existingUrl != null) {
+                            log.info("MISSING模式 - 自定义道具已有图片,跳过 - propId: {}", projectProp.getId());
+                            return true;
+                        }
+                    }
                 }
 
                 // 4. 构建提示词：使用道具描述生成道具图
                 String description = projectProp.getOverrideDescription() != null ?
-                        projectProp.getOverrideDescription() : prop.getDescription();
+                        projectProp.getOverrideDescription() : (prop != null ? prop.getDescription() : null);
+                if (customPrompt != null && !customPrompt.isBlank()) {
+                    description = customPrompt.trim();
+                }
                 String propName = projectProp.getDisplayName() != null ?
-                        projectProp.getDisplayName() : prop.getName();
+                        projectProp.getDisplayName() : (prop != null ? prop.getName() : "道具");
                 String prompt = String.format("道具画像，%s，%s，2D动漫风格，高质量高清，画质细腻，白色背景，单个物件",
                         propName, description != null ? description : "");
 
-                log.info("生成道具图片 - propId: {}, name: {}, prompt: {}", prop.getId(), propName, prompt);
+                Long propIdForLog = isCustomProp ? projectProp.getId() : prop.getId();
+                log.info("生成道具图片 - propId: {}, name: {}, prompt: {}", propIdForLog, propName, prompt);
 
                 // 5. 调用向量引擎生成图片
                 UserContext.setUserId(userId);
+                UserContext.setApiKey(msg.getApiKey());
                 try {
                     ImageApiResponse response = vectorEngineClient.generateImage(
                             prompt,
                             finalModel,
                             finalAspectRatio,
-                            Collections.emptyList()  // 无参考图片
+                            referenceImageUrls
                     );
 
                     // 6. 解析图片结果
@@ -1350,7 +1381,7 @@ public class MQConsumer {
 
                     // 获取所有返回的图片数据（即梦模型返回4张图片）
                     List<ImageApiResponse.ImageData> allResults = response.data();
-                    log.info("AI返回 {} 张图片 - propId: {}", allResults.size(), prop.getId());
+                    log.info("AI返回 {} 张图片 - propId: {}", allResults.size(), propIdForLog);
 
                     // 7. 处理所有图片并上传到OSS
                     List<String> ossUrls = new java.util.ArrayList<>();
@@ -1371,17 +1402,31 @@ public class MQConsumer {
                         throw new BusinessException(com.ym.ai_story_studio_server.common.ResultCode.AI_SERVICE_ERROR, "无法获取有效的图片数据");
                     }
 
-                    // 8. 使用第一张图片更新道具库的缩略图URL
+                    // 8. 使用第一张图片更新缩略图URL
                     String primaryOssUrl = ossUrls.get(0);
-                    prop.setThumbnailUrl(primaryOssUrl);
-                    propLibraryMapper.updateById(prop);
+                    if (isCustomProp) {
+                        assetCreationService.createAssetWithVersion(
+                                projectId,
+                                "PPROP",
+                                projectProp.getId(),
+                                "IMAGE",
+                                primaryOssUrl,
+                                prompt,
+                                finalModel,
+                                finalAspectRatio,
+                                userId
+                        );
+                    } else {
+                        prop.setThumbnailUrl(primaryOssUrl);
+                        propLibraryMapper.updateById(prop);
+                    }
 
                     log.info("道具图片生成成功 - propId: {}, 总图片数: {}, 主图: {}", 
-                            prop.getId(), ossUrls.size(), primaryOssUrl);
+                            isCustomProp ? projectProp.getId() : prop.getId(), ossUrls.size(), primaryOssUrl);
 
                     // 9. 扣除积分（按批次扣费，不按图片张数）
                     Map<String, Object> metaData = new HashMap<>();
-                    metaData.put("propId", prop.getId());
+                    metaData.put("propId", isCustomProp ? projectProp.getId() : prop.getId());
                     metaData.put("propName", propName);
                     metaData.put("model", finalModel);
                     metaData.put("imageCount", ossUrls.size());
@@ -1445,6 +1490,7 @@ public class MQConsumer {
         updateJobRunning(msg.getJobId());
         
         UserContext.setUserId(msg.getUserId());
+        UserContext.setApiKey(msg.getApiKey());
         try {
             aiTextService.generateText(new com.ym.ai_story_studio_server.dto.ai.TextGenerateRequest(
                 msg.getRawText(), null, null, msg.getProjectId()
@@ -1562,6 +1608,59 @@ public class MQConsumer {
         job.setErrorMessage(errorMessage);
         jobMapper.updateById(job);
         log.error("Job状态更新为FAILED - jobId: {}, success: {}, fail: {}, error: {}", jobId, successCount, failCount, errorMessage);
+    }
+
+    private Map<String, Object> getJobMeta(Long jobId) {
+        Job job = jobMapper.selectById(jobId);
+        if (job == null || job.getMetaJson() == null || job.getMetaJson().isBlank()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(job.getMetaJson(), new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.warn("读取任务metaJson失败 - jobId: {}", jobId, e);
+            return Collections.emptyMap();
+        }
+    }
+
+    private String getCustomPromptFromMeta(Map<String, Object> meta) {
+        if (meta == null || meta.isEmpty()) {
+            return null;
+        }
+        Object value = meta.get("customPrompt");
+        if (value instanceof String) {
+            String str = (String) value;
+            if (!str.isBlank()) {
+                return str;
+            }
+        }
+        return null;
+    }
+
+    private List<String> getReferenceImageUrlsFromMeta(Map<String, Object> meta) {
+        if (meta == null || meta.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Object value = meta.get("referenceImageUrls");
+        if (value instanceof List<?> list) {
+            List<String> urls = new ArrayList<>();
+            for (Object item : list) {
+                if (item instanceof String) {
+                    String str = (String) item;
+                    if (!str.isBlank()) {
+                        urls.add(str);
+                    }
+                }
+            }
+            return urls;
+        }
+        if (value instanceof String) {
+            String str = (String) value;
+            if (!str.isBlank()) {
+                return List.of(str);
+            }
+        }
+        return Collections.emptyList();
     }
 
     // ==================== 图片处理辅助方法 ====================
@@ -1732,7 +1831,7 @@ public class MQConsumer {
                     .collect(java.util.stream.Collectors.toList());
             
             // 3. 批量查询项目角色
-            List<ProjectCharacter> characters = projectCharacterMapper.selectBatchIds(characterIds);
+            List<ProjectCharacter> characters = projectCharacterMapper.selectByIds(characterIds);
             
             // 4. 获取关联的角色库ID，用于查询库缩略图
             List<Long> libraryCharacterIds = characters.stream()
@@ -1743,7 +1842,7 @@ public class MQConsumer {
             
             Map<Long, String> libraryThumbnailMap = new java.util.HashMap<>();
             if (!libraryCharacterIds.isEmpty()) {
-                List<CharacterLibrary> libraryCharacters = characterLibraryMapper.selectBatchIds(libraryCharacterIds);
+                List<CharacterLibrary> libraryCharacters = characterLibraryMapper.selectByIds(libraryCharacterIds);
                 libraryThumbnailMap = libraryCharacters.stream()
                         .filter(c -> c.getThumbnailUrl() != null && !c.getThumbnailUrl().isEmpty())
                         .collect(java.util.stream.Collectors.toMap(CharacterLibrary::getId, CharacterLibrary::getThumbnailUrl));
@@ -1821,6 +1920,32 @@ public class MQConsumer {
             
         } catch (Exception e) {
             log.error("查询角色资产失败 - characterId: {}", characterId, e);
+            return null;
+        }
+    }
+
+    private String getLatestPropThumbnailUrl(Long propId) {
+        try {
+            var assetQuery = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.ym.ai_story_studio_server.entity.Asset>();
+            assetQuery.eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerId, propId)
+                    .eq(com.ym.ai_story_studio_server.entity.Asset::getOwnerType, "PPROP")
+                    .eq(com.ym.ai_story_studio_server.entity.Asset::getAssetType, "IMAGE")
+                    .orderByDesc(com.ym.ai_story_studio_server.entity.Asset::getCreatedAt)
+                    .last("LIMIT 1");
+            var asset = assetMapper.selectOne(assetQuery);
+            if (asset == null) {
+                return null;
+            }
+
+            var versionQuery = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AssetVersion>();
+            versionQuery.eq(AssetVersion::getAssetId, asset.getId())
+                    .eq(AssetVersion::getStatus, "READY")
+                    .orderByDesc(AssetVersion::getVersionNo)
+                    .last("LIMIT 1");
+            AssetVersion version = assetVersionMapper.selectOne(versionQuery);
+            return version != null ? version.getUrl() : null;
+        } catch (Exception e) {
+            log.error("查询道具资产失败 - propId: {}", propId, e);
             return null;
         }
     }

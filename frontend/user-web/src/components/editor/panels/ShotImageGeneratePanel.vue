@@ -66,6 +66,8 @@ const generationHistory = ref<Array<{
   imageUrl: string
   timestamp: string
   isSelected: boolean
+  versionId?: number
+  source?: 'local' | 'asset'
   prompt?: string
   userInput?: string
   expiresAt: number
@@ -88,6 +90,35 @@ const loadHistory = () => {
     }
   } catch (error) {
     console.error('[加载历史记录失败]', error)
+  }
+}
+
+const loadAssetVersionHistory = async () => {
+  if (!currentShot.value?.shotImage?.assetId) return
+  try {
+    const versions = await editorStore.getAssetVersions(currentShot.value.shotImage.assetId)
+    const existingUrls = new Set(generationHistory.value.map(item => item.imageUrl))
+    const now = Date.now()
+    const items = versions
+      .filter(v => v.status === 'READY' && v.url)
+      .map(v => ({
+        id: v.id,
+        shotId: props.shotId,
+        imageUrl: v.url,
+        timestamp: new Date().toLocaleString('zh-CN'),
+        isSelected: false,
+        versionId: v.id,
+        source: 'asset' as const,
+        prompt: v.prompt || undefined,
+        expiresAt: now + 3650 * 24 * 60 * 60 * 1000
+      }))
+      .filter(item => !existingUrls.has(item.imageUrl))
+
+    if (items.length > 0) {
+      generationHistory.value = [...items, ...generationHistory.value]
+    }
+  } catch (error) {
+    console.error('[ShotImageGeneratePanel] 加载资产版本历史失败:', error)
   }
 }
 
@@ -116,12 +147,20 @@ const increaseQuantity = () => {
 }
 
 // 上传AI参考图
-const handleReferenceImageUpload = (event: Event) => {
+const handleReferenceImageUpload = async (event: Event) => {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
-  if (file) {
+  if (!file) return
+  try {
     referenceImage.value = file
-    referenceImageUrl.value = URL.createObjectURL(file)
+    const result = await uploadApi.upload(file, 'image')
+    referenceImageUrl.value = result.url
+    window.$message?.success('参考图上传成功')
+  } catch (error: any) {
+    console.error('[ShotImageGeneratePanel] 参考图上传失败:', error)
+    window.$message?.error('参考图上传失败')
+  } finally {
+    target.value = ''
   }
 }
 
@@ -272,13 +311,14 @@ const handleAIGenerate = async () => {
     })
     
     // 3. 调用批量生成接口（支持自定义prompt和参考图）
+    const finalReferenceUrl = referenceImageUrl.value || mergedImageUrl || undefined
     const response = await generationApi.generateSingleShot(
       editorStore.projectId,
       props.shotId,
       {
         aspectRatio: aspectRatio.value as '1:1' | '16:9' | '9:16' | '21:9',
         customPrompt: customPrompt,
-        referenceImageUrl: mergedImageUrl || undefined // 传入拼接的参考图
+        referenceImageUrl: finalReferenceUrl
       }
     )
     
@@ -387,8 +427,20 @@ const handleSelectHistory = async (id: number) => {
   console.log('[ShotImageGeneratePanel] 设置大图预览:', selected.imageUrl)
   generatedImageUrl.value = selected.imageUrl
   
-// 应用图片到分镜
-  await applyImageToShot(selected.imageUrl)
+  // 应用图片到分镜
+  if (selected.versionId && currentShot.value?.shotImage?.assetId) {
+    try {
+      await editorStore.setAssetCurrentVersion(currentShot.value.shotImage.assetId, {
+        versionId: selected.versionId
+      })
+      await editorStore.fetchShots()
+    } catch (error) {
+      console.error('[ShotImageGeneratePanel] 设置版本失败:', error)
+      await applyImageToShot(selected.imageUrl)
+    }
+  } else {
+    await applyImageToShot(selected.imageUrl)
+  }
   
   window.$message?.success('已加载并应用历史记录')
 }
@@ -491,10 +543,11 @@ onMounted(() => {
   
   // 加载历史记录
   loadHistory()
+  loadAssetVersionHistory()
   
   // 如果当前分镜已有缩略图，显示在大图预览区
-  if (currentShot.value?.shotImage?.thumbnailUrl) {
-    generatedImageUrl.value = currentShot.value.shotImage.thumbnailUrl
+  if (currentShot.value?.shotImage?.currentUrl) {
+    generatedImageUrl.value = currentShot.value.shotImage.currentUrl
   }
 })
 </script>

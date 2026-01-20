@@ -5,17 +5,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ym.ai_story_studio_server.common.ResultCode;
 import com.ym.ai_story_studio_server.config.AiProperties;
 import com.ym.ai_story_studio_server.exception.BusinessException;
+import com.ym.ai_story_studio_server.util.UserContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.util.StringUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -101,9 +104,17 @@ public class VectorEngineClient {
 
         AiProperties.VectorEngine config = aiProperties.getVectorengine();
 
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        if (config.getConnectTimeout() != null) {
+            requestFactory.setConnectTimeout(Math.toIntExact(config.getConnectTimeout()));
+        }
+        if (config.getReadTimeout() != null) {
+            requestFactory.setReadTimeout(Math.toIntExact(config.getReadTimeout()));
+        }
+
         this.restClient = RestClient.builder()
                 .baseUrl(config.getBaseUrl())
-                .defaultHeader("Authorization", "Bearer " + config.getApiKey())
+                .requestFactory(requestFactory)
                 .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                 .build();
 
@@ -149,6 +160,7 @@ public class VectorEngineClient {
         try {
             TextApiResponse response = restClient.post()
                     .uri("/v1/chat/completions")
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .body(requestBody)
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
@@ -302,6 +314,7 @@ public class VectorEngineClient {
             // 调用Chat Completions端点
             TextApiResponse chatResponse = restClient.post()
                     .uri("/v1/chat/completions")
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .body(requestBody)
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
@@ -378,8 +391,7 @@ public class VectorEngineClient {
                     }
                     log.debug("开始下载参考图片: {}", url);
 
-                    byte[] imageBytes = RestClient.create()
-                            .get()
+                    byte[] imageBytes = restClient.get()
                             .uri(url)
                             .retrieve()
                             .body(byte[].class);
@@ -424,6 +436,7 @@ public class VectorEngineClient {
             // 调用Gemini原生端点
             GeminiNativeImageResponse nativeResponse = restClient.post()
                     .uri(endpoint)
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .body(requestBody)
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
@@ -627,6 +640,7 @@ public class VectorEngineClient {
         try {
             ImageApiResponse response = restClient.post()
                     .uri("/v1/images/generations")
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .body(requestBody)
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
@@ -681,12 +695,9 @@ public class VectorEngineClient {
             String referenceImageUrl
     ) {
         String effectiveModel = normalizeVideoModel(model);
+        boolean hasReference = referenceImageUrl != null && !referenceImageUrl.isBlank();
         log.info("调用视频生成API - 模型: {}, 画幅: {}, 时长: {}, 是否有参考图: {}",
-                effectiveModel, aspectRatio, duration, referenceImageUrl != null);
-
-        if (referenceImageUrl == null || referenceImageUrl.isBlank()) {
-            throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "视频生成需要提供参考图(images)");
-        }
+                effectiveModel, aspectRatio, duration, hasReference);
 
         String targetSize = mapSizeToVideoCreateSize(size, aspectRatio);
         String targetOrientation = mapToVideoCreateOrientation(aspectRatio, size);
@@ -701,7 +712,9 @@ public class VectorEngineClient {
             try {
                 // 每次重试需要重新构建请求体(因为资源可能被消费)
                 Map<String, Object> retryRequestBody = new HashMap<>();
-                retryRequestBody.put("images", List.of(referenceImageUrl));
+                if (hasReference) {
+                    retryRequestBody.put("images", List.of(referenceImageUrl));
+                }
                 retryRequestBody.put("model", effectiveModel);
                 retryRequestBody.put("orientation", targetOrientation);
                 retryRequestBody.put("prompt", prompt);
@@ -714,6 +727,7 @@ public class VectorEngineClient {
                         .uri("/v1/video/create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .accept(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + resolveApiKey())
                         .body(retryRequestBody)
                         .retrieve()
                         .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
@@ -838,6 +852,7 @@ public class VectorEngineClient {
 
             String rawResponse = restClient.get()
                     .uri("/v1/videos/{id}", taskId)
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .retrieve()
                     .onStatus(HttpStatusCode::isError, (request, httpResponse) -> {
                         String errorBody = new String(httpResponse.getBody().readAllBytes());
@@ -888,6 +903,7 @@ public class VectorEngineClient {
         try {
             ResponseEntity<byte[]> response = restClient.get()
                     .uri("/v1/videos/{id}/content", taskId)
+                    .header("Authorization", "Bearer " + resolveApiKey())
                     .retrieve()
                     .toEntity(byte[].class);
 
@@ -908,6 +924,14 @@ public class VectorEngineClient {
             log.error("下载视频内容失败 - taskId: {}", taskId, e);
             throw new BusinessException(ResultCode.AI_SERVICE_ERROR, "下载视频内容失败: " + e.getMessage(), e);
         }
+    }
+
+    private String resolveApiKey() {
+        String apiKey = UserContext.getApiKey();
+        if (!StringUtils.hasText(apiKey)) {
+            throw new BusinessException(ResultCode.PARAM_MISSING, "未设置API密钥");
+        }
+        return apiKey;
     }
 
     /**

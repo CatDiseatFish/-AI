@@ -5,6 +5,7 @@ import { useEditorStore } from '@/stores/editor'
 import { useProjectStore } from '@/stores/project'
 import { useUserStore } from '@/stores/user'
 import { useModelConfigStore } from '@/stores/modelConfig'
+import { usePanelManagerStore } from '@/stores/panelManager'
 import { exportApi } from '@/api/export'
 import type { ExportRequest, ExportResponse } from '@/types/api'
 import StoryboardTable from '@/components/editor/StoryboardTable.vue'
@@ -15,6 +16,7 @@ import ModelConfigModal from './components/ModelConfigModal.vue'
 import ExportModal from './components/ExportModal.vue'
 import ExportProgressModal from './components/ExportProgressModal.vue'
 import ProjectNameEditor from './components/ProjectNameEditor.vue'
+import ApiKeyModal from './components/ApiKeyModal.vue'
 import LoadingSpinner from '@/components/base/LoadingSpinner.vue'
 
 const route = useRoute()
@@ -23,6 +25,7 @@ const editorStore = useEditorStore()
 const projectStore = useProjectStore()
 const userStore = useUserStore()
 const modelConfigStore = useModelConfigStore()
+const panelManagerStore = usePanelManagerStore()
 
 const projectId = computed(() => Number(route.params.id))
 const currentProject = computed(() => projectStore.currentProject)
@@ -30,11 +33,22 @@ const showModelConfigModal = ref(false)
 const showExportModal = ref(false)
 const showExportProgressModal = ref(false)
 const showHistoryModal = ref(false)
+const showApiKeyModal = ref(false)
+const hasLocalApiKey = ref(false)
 const exportJobId = ref<number | null>(null)
+
+const refreshApiKeyFlag = () => {
+  hasLocalApiKey.value = !!localStorage.getItem('ai_api_key')
+}
+
+const handleApiKeyRequired = () => {
+  showApiKeyModal.value = true
+}
 
 onMounted(async () => {
   if (projectId.value) {
     try {
+      panelManagerStore.closePanel()
       // Fetch project details and initialize editor
       await projectStore.fetchProjectDetail(projectId.value)
       modelConfigStore.loadFromJson(projectStore.currentProject?.modelConfigJson)
@@ -47,11 +61,14 @@ onMounted(async () => {
 
   // Register global keyboard shortcuts
   window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('ai-api-key-required', handleApiKeyRequired)
+  refreshApiKeyFlag()
 })
 
 onBeforeUnmount(() => {
   // Cleanup keyboard listener
   window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('ai-api-key-required', handleApiKeyRequired)
 })
 
 // Keyboard shortcuts handler
@@ -121,6 +138,10 @@ const handleOpenModelConfig = () => {
   showModelConfigModal.value = true
 }
 
+const handleOpenApiKeyModal = () => {
+  showApiKeyModal.value = true
+}
+
 const handleOpenExport = () => {
   showExportModal.value = true
 }
@@ -157,67 +178,116 @@ const projectTitle = computed(() => currentProject.value?.name || '未命名项�
 const showExportMenu = ref(false)
 
 const handleExportAssets = async () => {
-  console.log('[EditorPage] Export all generated images and videos')
+  console.log('[EditorPage] Export selected images and videos')
   showExportMenu.value = false
 
-  const shots = editorStore.shots
-  if (shots.length === 0) {
-    window.$message?.warning('当前项目没有分镜')
+  // 仅导出当前选中展示的分镜资产
+  const shots = editorStore.selectedShots
+  console.log('[EditorPage] Selected shot ids:', Array.from(editorStore.selectedShotIds))
+  console.log('[EditorPage] Selected shots count:', shots.length, shots)
+
+  if (!editorStore.hasSelection || shots.length === 0) {
+    window.$message?.warning('请先在分镜表中选择需要导出的分镜')
     return
   }
 
-  // 收集所有可下载的资产
+  // 收集所有可下载的资产（基于当前版本的 URL）
   const assetsToDownload: Array<{ url: string; filename: string; type: string }> = []
+  let hasImageCount = 0
+  let hasVideoCount = 0
+  let noAssetCount = 0
 
   shots.forEach(shot => {
-    // 收集分镜图片
-    if (shot.shotImage.status === 'READY' && shot.shotImage.url) {
-      const ext = shot.shotImage.url.split('.').pop() || 'jpg'
+    console.log('[EditorPage] Shot asset status:', {
+      shotNo: shot.shotNo,
+      shotImageStatus: shot.shotImage?.status,
+      shotImageUrl: shot.shotImage?.currentUrl,
+      videoStatus: shot.video?.status,
+      videoUrl: shot.video?.currentUrl,
+    })
+
+    let shotHasAsset = false
+
+    // 收集分镜图片（只要有 currentUrl 就导出，不再强依赖 status 字段）
+    if (shot.shotImage && shot.shotImage.currentUrl) {
+      const ext = shot.shotImage.currentUrl.split('.').pop() || 'jpg'
       assetsToDownload.push({
-        url: shot.shotImage.url,
+        url: shot.shotImage.currentUrl,
         filename: `分镜${shot.shotNo}_图片.${ext}`,
         type: '分镜图'
       })
+      hasImageCount++
+      shotHasAsset = true
     }
 
     // 收集视频
-    if (shot.video.status === 'READY' && shot.video.url) {
-      const ext = shot.video.url.split('.').pop() || 'mp4'
+    if (shot.video && shot.video.currentUrl) {
+      const ext = shot.video.currentUrl.split('.').pop() || 'mp4'
       assetsToDownload.push({
-        url: shot.video.url,
+        url: shot.video.currentUrl,
         filename: `分镜${shot.shotNo}_视频.${ext}`,
         type: '视频'
       })
+      hasVideoCount++
+      shotHasAsset = true
+    }
+
+    if (!shotHasAsset) {
+      noAssetCount++
     }
   })
 
+  console.log('[EditorPage] Collected assets to download:', assetsToDownload)
+  console.log('[EditorPage] Summary:', { hasImageCount, hasVideoCount, noAssetCount, total: shots.length })
+
   if (assetsToDownload.length === 0) {
-    window.$message?.warning('当前项目没有已生成的图片或视频')
+    window.$message?.warning(
+      `选中的 ${shots.length} 条分镜中，没有已生成的图片或视频。请先为分镜生成图片或视频后再导出。`
+    )
     return
+  }
+
+  // 如果有部分分镜没有资源，给出提示
+  if (noAssetCount > 0) {
+    window.$message?.info(
+      `选中的 ${shots.length} 条分镜中，${hasImageCount} 条有图片，${hasVideoCount} 条有视频，${noAssetCount} 条暂无资源。将导出 ${assetsToDownload.length} 个文件。`
+    )
   }
 
   window.$message?.info(`开始下载 ${assetsToDownload.length} 个文件...`)
 
-  // 逐个下载资产文件
+  // 逐个下载资产文件：使用后端流式下载直链
+  // 说明：部分浏览器会拦截批量 a.click() 触发的下载（尤其是视频）。这里改用 iframe 触发下载，兼容性更好。
   let successCount = 0
   let failCount = 0
 
+  const triggerDownload = (url: string) => {
+    // 使用隐藏 iframe 触发下载，避免浏览器对脚本批量下载的拦截
+    const iframe = document.createElement('iframe')
+    iframe.style.display = 'none'
+    iframe.src = url
+    document.body.appendChild(iframe)
+    // 延迟移除，保证请求发出
+    setTimeout(() => {
+      try {
+        document.body.removeChild(iframe)
+      } catch (_) {}
+    }, 30_000)
+  }
+
   for (const asset of assetsToDownload) {
     try {
-      // 创建下载链接
-      const link = document.createElement('a')
-      link.href = asset.url
-      link.download = asset.filename
-      link.target = '_blank'
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+      const token = localStorage.getItem('token') || ''
+      const downloadUrl = `/api/assets/download?url=${encodeURIComponent(asset.url)}&filename=${encodeURIComponent(asset.filename)}&token=${encodeURIComponent(token)}`
+
+      console.log('[EditorPage] Trigger download:', { type: asset.type, filename: asset.filename, downloadUrl })
+      triggerDownload(downloadUrl)
 
       successCount++
       console.log(`[EditorPage] Downloaded: ${asset.filename}`)
 
       // 添加延迟避免浏览器阻止多个下载
-      await new Promise(resolve => setTimeout(resolve, 300))
+      await new Promise(resolve => setTimeout(resolve, 500))
     } catch (error) {
       console.error(`[EditorPage] Failed to download ${asset.filename}:`, error)
       failCount++
@@ -300,36 +370,30 @@ const handleExportScripts = () => {
         <!-- Project Name Editor -->
         <ProjectNameEditor :project-id="projectId" />
 
-        <!-- Model Config Button -->
-        <button class="btn btn-secondary text-sm" @click="handleOpenModelConfig">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-          <span class="font-semibold">模型配置</span>
+        <!-- API Key Button -->
+        <button
+          class="btn btn-secondary text-sm"
+          @click="handleOpenApiKeyModal"
+          title="设置API密钥"
+        >
+          <span class="font-semibold">设置API密钥</span>
+          <span
+            v-if="hasLocalApiKey"
+            class="ml-2 inline-block w-2 h-2 rounded-full bg-green-400"
+          ></span>
         </button>
 
-        <!-- Export Button -->
-        <button class="btn btn-primary text-sm" @click="handleOpenExport">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" x2="12" y1="15" y2="3"></line>
-          </svg>
-          <span class="font-semibold">导出项目</span>
-        </button>
+        <!-- Model Config Button (hidden) -->
 
-        <!-- Export Menu (Gear Icon) -->
+        <!-- Export Button + Dropdown -->
         <div class="relative">
-          <button
-            @click.stop="showExportMenu = !showExportMenu"
-            class="p-2 rounded hover:bg-bg-hover transition-colors"
-            title="更多导出选项"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-text-secondary">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          <button class="btn btn-primary text-sm" @click.stop="showExportMenu = !showExportMenu">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" x2="12" y1="15" y2="3"></line>
             </svg>
+            <span class="font-semibold">导出项目</span>
           </button>
 
           <!-- Dropdown Menu -->
@@ -343,9 +407,26 @@ const handleExportScripts = () => {
           >
             <div
               v-if="showExportMenu"
-              class="absolute top-full right-0 mt-2 w-56 bg-bg-elevated border border-border-default rounded shadow-2xl overflow-hidden z-50"
+              class="absolute top-full left-0 mt-2 w-64 bg-bg-elevated border border-border-default rounded shadow-2xl overflow-hidden z-50"
               @click.stop
             >
+              <!-- 导出项目(后端ZIP) - 暂时下线
+              <button
+                @click="handleOpenExport"
+                class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-subtle transition-colors border-b border-border-subtle"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-text-primary flex-shrink-0">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" x2="12" y1="15" y2="3"></line>
+                </svg>
+                <div class="flex-1">
+                  <p class="text-text-primary text-sm font-medium">导出项目打包</p>
+                  <p class="text-text-tertiary text-xs mt-0.5">选择导出内容并生成ZIP</p>
+                </div>
+              </button>
+              -->
+
               <!-- 导出所有图片视频 -->
               <button
                 @click="handleExportAssets"
@@ -357,8 +438,8 @@ const handleExportScripts = () => {
                   <polyline points="21 15 16 10 5 21"></polyline>
                 </svg>
                 <div class="flex-1">
-                  <p class="text-text-primary text-sm font-medium">导出所有图片视频</p>
-                  <p class="text-text-tertiary text-xs mt-0.5">下载所有生成的资产文件</p>
+                  <p class="text-text-primary text-sm font-medium">导出选中图片视频</p>
+                  <p class="text-text-tertiary text-xs mt-0.5">下载当前选中分镜的所有图片和视频</p>
                 </div>
               </button>
 
@@ -445,6 +526,12 @@ const handleExportScripts = () => {
       :project-id="projectId"
       @update:visible="showModelConfigModal = $event"
       @close="showModelConfigModal = false"
+    />
+    <ApiKeyModal
+      :visible="showApiKeyModal"
+      :has-api-key="hasLocalApiKey"
+      @close="showApiKeyModal = false"
+      @saved="showApiKeyModal = false; refreshApiKeyFlag()"
     />
 
     <!-- Export Modal -->

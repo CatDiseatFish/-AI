@@ -33,6 +33,11 @@ public class RedisUtil {
     private static final String LOCK_PREFIX = "SMS:LOCK:";
 
     /**
+     * 图形验证码Key前缀
+     */
+    private static final String CAPTCHA_PREFIX = "CAPTCHA:";
+
+    /**
      * 存储验证码
      *
      * @param phone 手机号
@@ -93,5 +98,39 @@ public class RedisUtil {
         String key = LOCK_PREFIX + phone;
         Boolean exists = redisTemplate.hasKey(key);
         return Boolean.TRUE.equals(exists);
+    }
+
+    /**
+     * 存储图形验证码
+     *
+     * @param captchaId 验证码ID
+     * @param code 验证码内容
+     * @param seconds 有效期（秒）
+     */
+    public void saveCaptcha(String captchaId, String code, long seconds) {
+        String key = CAPTCHA_PREFIX + captchaId;
+        redisTemplate.opsForValue().set(key, code, seconds, TimeUnit.SECONDS);
+        log.debug("存储图形验证码到Redis: key={}, TTL={}秒", key, seconds);
+    }
+
+    /**
+     * 获取图形验证码
+     *
+     * @param captchaId 验证码ID
+     * @return 验证码内容
+     */
+    public String getCaptcha(String captchaId) {
+        String key = CAPTCHA_PREFIX + captchaId;
+        return redisTemplate.opsForValue().get(key);
+    }
+
+    /**
+     * 删除图形验证码
+     *
+     * @param captchaId 验证码ID
+     */
+    public void deleteCaptcha(String captchaId) {
+        String key = CAPTCHA_PREFIX + captchaId;
+        redisTemplate.delete(key);
     }
 }

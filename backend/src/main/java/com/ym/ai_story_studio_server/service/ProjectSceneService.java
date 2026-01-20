@@ -36,6 +36,8 @@ public interface ProjectSceneService {
      */
     ProjectSceneVO addSceneToProject(Long userId, Long projectId, AddSceneToProjectRequest request);
 
+    ProjectSceneVO createCustomScene(Long userId, Long projectId, com.ym.ai_story_studio_server.dto.scene.CreateProjectSceneRequest request);
+
     /**
      * 更新项目内场景覆盖
      *

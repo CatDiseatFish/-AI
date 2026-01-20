@@ -196,6 +196,39 @@ public class ProjectCharacterServiceImpl implements ProjectCharacterService {
         );
     }
 
+    @Override
+    public ProjectCharacterVO createCustomCharacter(Long userId, Long projectId,
+                                                    com.ym.ai_story_studio_server.dto.character.CreateProjectCharacterRequest request) {
+        log.info("创建自定义项目角色, userId: {}, projectId: {}", userId, projectId);
+
+        validateProjectOwnership(projectId, userId);
+
+        ProjectCharacter projectCharacter = new ProjectCharacter();
+        projectCharacter.setProjectId(projectId);
+        projectCharacter.setDisplayName(request.displayName());
+        projectCharacter.setOverrideDescription(request.overrideDescription());
+        projectCharacterMapper.insert(projectCharacter);
+
+        String displayName = StringUtils.hasText(request.displayName())
+                ? request.displayName()
+                : "自定义角色";
+        String finalDescription = StringUtils.hasText(request.overrideDescription())
+                ? request.overrideDescription()
+                : null;
+
+        return new ProjectCharacterVO(
+                projectCharacter.getId(),
+                projectId,
+                null,
+                "自定义角色",
+                displayName,
+                finalDescription,
+                projectCharacter.getOverrideDescription(),
+                projectCharacter.getThumbnailUrl(),
+                projectCharacter.getCreatedAt()
+        );
+    }
+
     /**
      * 更新项目内角色覆盖
      *
@@ -229,6 +262,9 @@ public class ProjectCharacterServiceImpl implements ProjectCharacterService {
         }
         if (request.overrideDescription() != null) {
             projectCharacter.setOverrideDescription(request.overrideDescription());
+        }
+        if (request.thumbnailUrl() != null) {
+            projectCharacter.setThumbnailUrl(request.thumbnailUrl());
         }
         // 支持更新角色库关联(用于重新关联已删除的角色)
         if (request.libraryCharacterId() != null) {

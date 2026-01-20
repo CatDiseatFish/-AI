@@ -55,7 +55,8 @@ public class AuthServiceImpl implements AuthService {
     private static final int INITIAL_BALANCE = 20;
 
     @Override
-    public void sendVerificationCode(String phone) {
+    public void sendVerificationCode(String phone, String captchaId, String captchaCode) {
+        verifyCaptcha(captchaId, captchaCode);
         // 1. 检查防刷锁
         if (redisUtil.hasLock(phone)) {
             log.warn("发送验证码失败：请求过于频繁, phone={}", maskPhone(phone));
@@ -230,5 +231,19 @@ public class AuthServiceImpl implements AuthService {
             return phone;
         }
         return phone.substring(0, 3) + "****" + phone.substring(7);
+    }
+
+    private void verifyCaptcha(String captchaId, String captchaCode) {
+        String cachedCode = redisUtil.getCaptcha(captchaId);
+        if (cachedCode == null) {
+            throw new BusinessException(ResultCode.SMS_CODE_INVALID, "图形验证码已过期，请刷新");
+        }
+
+        if (!cachedCode.equalsIgnoreCase(captchaCode)) {
+            redisUtil.deleteCaptcha(captchaId);
+            throw new BusinessException(ResultCode.SMS_CODE_INVALID, "图形验证码错误");
+        }
+
+        redisUtil.deleteCaptcha(captchaId);
     }
 }

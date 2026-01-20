@@ -14,8 +14,10 @@ public interface AuthService {
      * 发送验证码
      *
      * @param phone 手机号
+     * @param captchaId 图形验证码ID
+     * @param captchaCode 图形验证码
      */
-    void sendVerificationCode(String phone);
+    void sendVerificationCode(String phone, String captchaId, String captchaCode);
 
     /**
      * 手机号登录

@@ -2,6 +2,7 @@ package com.ym.ai_story_studio_server.controller;
 
 import com.ym.ai_story_studio_server.common.Result;
 import com.ym.ai_story_studio_server.dto.prop.AddPropToProjectRequest;
+import com.ym.ai_story_studio_server.dto.prop.CreateProjectPropRequest;
 import com.ym.ai_story_studio_server.dto.prop.ProjectPropVO;
 import com.ym.ai_story_studio_server.dto.prop.UpdateProjectPropRequest;
 import com.ym.ai_story_studio_server.service.ProjectPropService;
@@ -44,6 +45,19 @@ public class ProjectPropController {
         Long userId = UserContext.getUserId();
         log.info("添加道具到项目, userId: {}, projectId: {}", userId, projectId);
         ProjectPropVO prop = projectPropService.addPropToProject(userId, projectId, request);
+        return Result.success(prop);
+    }
+
+    /**
+     * 创建项目内自定义道具（不加入道具库）
+     */
+    @PostMapping("/custom")
+    public Result<ProjectPropVO> createCustomProp(
+            @PathVariable Long projectId,
+            @Valid @RequestBody CreateProjectPropRequest request) {
+        Long userId = UserContext.getUserId();
+        log.info("创建项目内自定义道具, userId: {}, projectId: {}", userId, projectId);
+        ProjectPropVO prop = projectPropService.createCustomProp(userId, projectId, request);
         return Result.success(prop);
     }
 

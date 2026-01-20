@@ -503,6 +503,7 @@ public class ShotServiceImpl implements ShotService {
             咖啡厅内部：闹市区的文艺咖啡厅，下午，柔和的暖光，木质桌椅，墙上挂着抽象画，空气中弥漫着咖啡香气，轻柔的爵士乐在播放
             马路街道:马路,街头,繁华的商业街，夜晚，霓虹灯闪烁，两旁是各种店铺，远处可见高楼大厦的轮廓
 
+            分镜剧本
             场1-1 日 内 咖啡厅
             出场人物:林辰、林清雪
             ▲（中景）林辰和林清雪面对面坐着，桌上放着咖啡，叶辰说：“我想和你谈谈我们的未来。”
@@ -557,7 +558,14 @@ public class ShotServiceImpl implements ShotService {
             List<String> scriptSegments = extractScriptSegmentsFromStoryboard(sections.storyboardText);
 
             if (scriptSegments.isEmpty()) {
+                scriptSegments = extractScriptSegmentsBySceneMarkers(aiResponse);
+            }
+            if (scriptSegments.isEmpty()) {
                 scriptSegments = extractScriptSegmentsFromText(aiResponse);
+            }
+
+            if (scriptSegments.isEmpty() || isLikelyMissingStoryboard(scriptSegments, aiResponse)) {
+                scriptSegments = parseScriptToSegments(fullScript);
             }
             if (scriptSegments.isEmpty()) {
                 return fallbackParseScriptWithCharactersAndScenes(fullScript);
@@ -582,6 +590,20 @@ public class ShotServiceImpl implements ShotService {
             log.warn("解析AI响应失败，使用备用解析逻辑: {}", e.getMessage());
             return fallbackParseScriptWithCharactersAndScenes(fullScript);
         }
+    }
+
+    private boolean isLikelyMissingStoryboard(List<String> segments, String aiResponse) {
+        if (segments.isEmpty()) {
+            return true;
+        }
+        boolean hasSceneMarker = Pattern.compile("(?m)^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+")
+                .matcher(aiResponse).find();
+        if (hasSceneMarker) {
+            return false;
+        }
+        String single = segments.size() == 1 ? segments.get(0) : "";
+        return single.contains("所有角色及角色形象提示词")
+                && single.contains("所有场景及场景提示词");
     }
     
     /**
@@ -612,13 +634,15 @@ public class ShotServiceImpl implements ShotService {
     private ParsedSections parseStructuredSections(String response) {
         ParsedSections sections = new ParsedSections();
 
-        String characterBlock = extractSection(response, "所有角色及角色形象提示词", "所有场景及场景提示词");
+        String characterBlock = extractSectionByMarker(response,
+                "所有角色及角色形象提示词", "所有场景及场景提示词");
         sections.characterDescriptions = parseKeyValueLines(characterBlock);
 
-        String sceneBlock = extractSection(response, "所有场景及场景提示词", "分镜剧本");
+        String sceneBlock = extractSectionByMarker(response,
+                "所有场景及场景提示词", "分镜剧本");
         sections.sceneDescriptions = parseKeyValueLines(sceneBlock);
 
-        int storyboardIndex = response.indexOf("分镜剧本");
+        int storyboardIndex = findSectionIndex(response, "分镜剧本");
         if (storyboardIndex >= 0) {
             sections.storyboardText = response.substring(storyboardIndex + "分镜剧本".length()).trim();
         } else {
@@ -628,21 +652,41 @@ public class ShotServiceImpl implements ShotService {
         return sections;
     }
 
-    private String extractSection(String response, String startMarker, String endMarker) {
-        int startIndex = response.indexOf(startMarker);
+    private String extractSectionByMarker(String response, String startMarker, String endMarker) {
+        int startIndex = findSectionIndex(response, startMarker);
         if (startIndex < 0) {
             return "";
         }
         int contentStart = startIndex + startMarker.length();
-        int endIndex = response.indexOf(endMarker, contentStart);
+        int endIndex = findSectionIndex(response, endMarker, contentStart);
         if (endIndex < 0) {
             endIndex = response.length();
         }
         return response.substring(contentStart, endIndex).trim();
     }
 
+    private int findSectionIndex(String response, String marker) {
+        return findSectionIndex(response, marker, 0);
+    }
+
+    private int findSectionIndex(String response, String marker, int fromIndex) {
+        Pattern pattern = Pattern.compile("(?m)^\\s*#{0,4}\\s*" + Pattern.quote(marker) + "\\s*$");
+        Matcher matcher = pattern.matcher(response);
+        while (matcher.find()) {
+            if (matcher.start() >= fromIndex) {
+                String line = matcher.group(0);
+                int offsetInLine = line.indexOf(marker);
+                if (offsetInLine >= 0) {
+                    return matcher.start() + offsetInLine;
+                }
+                return matcher.start();
+            }
+        }
+        return response.indexOf(marker, fromIndex);
+    }
+
     private String extractStoryboardFromText(String response) {
-        Matcher matcher = Pattern.compile("(?m)^场\\d+-\\d+").matcher(response);
+        Matcher matcher = Pattern.compile("(?m)^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+").matcher(response);
         if (matcher.find()) {
             return response.substring(matcher.start()).trim();
         }
@@ -661,6 +705,11 @@ public class ShotServiceImpl implements ShotService {
             if (trimmed.isEmpty()) {
                 continue;
             }
+            if (trimmed.equals("---") || trimmed.equals("*")) {
+                continue;
+            }
+            trimmed = trimmed.replaceAll("^[-*\\d.\\s]+", "");
+            trimmed = trimmed.replace("**", "");
             int separatorIndex = trimmed.indexOf('：');
             if (separatorIndex < 0) {
                 separatorIndex = trimmed.indexOf(':');
@@ -684,7 +733,7 @@ public class ShotServiceImpl implements ShotService {
         }
 
         List<Integer> indices = new ArrayList<>();
-        Matcher matcher = Pattern.compile("(?m)^场\\d+-\\d+").matcher(storyboardText);
+        Matcher matcher = Pattern.compile("(?m)^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+").matcher(storyboardText);
         while (matcher.find()) {
             indices.add(matcher.start());
         }
@@ -696,7 +745,7 @@ public class ShotServiceImpl implements ShotService {
         for (int i = 0; i < indices.size(); i++) {
             int start = indices.get(i);
             int end = (i + 1 < indices.size()) ? indices.get(i + 1) : storyboardText.length();
-            String segment = storyboardText.substring(start, end).trim();
+            String segment = normalizeStoryboardSegment(storyboardText.substring(start, end).trim());
             if (!segment.isEmpty()) {
                 segments.add(segment);
             }
@@ -715,15 +764,66 @@ public class ShotServiceImpl implements ShotService {
         // 按 "---" 分割
         String[] segments = text.split("---");
         List<String> result = new ArrayList<>();
-        
+
         for (String segment : segments) {
             String trimmedSegment = segment.trim();
             if (!trimmedSegment.isEmpty()) {
-                result.add(trimmedSegment);
+                if (Pattern.compile("(?m)^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+")
+                        .matcher(trimmedSegment).find()) {
+                    result.add(normalizeStoryboardSegment(trimmedSegment));
+                }
             }
         }
-        
+
         return result;
+    }
+
+    private List<String> extractScriptSegmentsBySceneMarkers(String text) {
+        if (text == null || text.isBlank()) {
+            return new ArrayList<>();
+        }
+        Pattern scenePattern = Pattern.compile("(?m)^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+");
+        Matcher matcher = scenePattern.matcher(text);
+        List<Integer> indices = new ArrayList<>();
+        while (matcher.find()) {
+            indices.add(matcher.start());
+        }
+        if (indices.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> segments = new ArrayList<>();
+        for (int i = 0; i < indices.size(); i++) {
+            int start = indices.get(i);
+            int end = (i + 1 < indices.size()) ? indices.get(i + 1) : text.length();
+            String segment = normalizeStoryboardSegment(text.substring(start, end).trim());
+            if (!segment.isEmpty()) {
+                segments.add(segment);
+            }
+        }
+        return segments;
+    }
+
+    private String normalizeStoryboardSegment(String segment) {
+        if (segment == null || segment.isBlank()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String[] lines = segment.split("\\R");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.matches("^\\*\\*?\\s*#+\\s*分镜剧本\\s*\\*\\*?$")
+                    || trimmed.matches("^#+\\s*分镜剧本\\s*$")) {
+                continue;
+            }
+            trimmed = trimmed.replace("**", "");
+            if (trimmed.matches("^#+\\s*场\\d+-\\d+.*")) {
+                trimmed = trimmed.replaceFirst("^#+\\s*", "");
+            }
+            if (!trimmed.isEmpty()) {
+                sb.append(trimmed).append("\n");
+            }
+        }
+        return sb.toString().trim();
     }
     
     /**
@@ -758,7 +858,7 @@ public class ShotServiceImpl implements ShotService {
         
         for (String segment : scriptSegments) {
             // 匹配场次开头的场景信息，如 "场1-1 日 内 咖啡厅"
-            Pattern pattern = Pattern.compile("^场\\d+-\\d+\\s+([^\\n]+)");
+            Pattern pattern = Pattern.compile("^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+\\s+([^\\n]+)");
             Matcher matcher = pattern.matcher(segment);
             
             if (matcher.find()) {
@@ -1159,7 +1259,8 @@ public class ShotServiceImpl implements ShotService {
      */
     private String extractSceneFromScript(String scriptText) {
         // 匹配场次开头的场景信息，如 "场1-1 日 内 咖啡厅"
-        Pattern pattern = Pattern.compile("^场\\d+-\\d+\\s+[^\\s]+\\s+[^\\s]+\\s+(.+?)\\s*$", Pattern.MULTILINE);
+        Pattern pattern = Pattern.compile("^\\s*(?:\\*\\*\\s*)?#{0,4}\\s*场\\d+-\\d+\\s+[^\\s]+\\s+[^\\s]+\\s+(.+?)\\s*$",
+                Pattern.MULTILINE);
         Matcher matcher = pattern.matcher(scriptText);
         
         if (matcher.find()) {

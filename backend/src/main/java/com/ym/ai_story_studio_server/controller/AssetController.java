@@ -17,12 +17,17 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.core.io.InputStreamResource;
 
 import java.io.InputStream;
 import java.net.URL;
+import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.util.List;
 
 /**
@@ -47,6 +52,8 @@ import java.util.List;
 public class AssetController {
 
     private final AssetService assetService;
+    private final com.ym.ai_story_studio_server.service.StorageService storageService;
+    private final com.ym.ai_story_studio_server.config.StorageProperties storageProperties;
 
     /**
      * 获取资产版本历史列表
@@ -182,6 +189,139 @@ public class AssetController {
         } catch (Exception e) {
             log.error("下载图片失败", e);
             return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * 从 URL 流式下载资源（用于大文件，如视频）
+     *
+     * <p>通过后端代理下载资源并以 attachment 方式返回，避免前端跨域/鉴权问题，
+     * 同时避免一次性读入内存导致的视频下载失败。</p>
+     *
+     * <p>如果URL是OSS/MinIO的URL，会使用StorageService下载（带认证），
+     * 否则使用普通的URLConnection下载。</p>
+     *
+     * @param url 资源URL（必填）
+     * @param filename 下载文件名（可选）
+     */
+    @GetMapping("/download")
+    public ResponseEntity<InputStreamResource> download(@RequestParam("url") String url,
+                                                       @RequestParam(value = "filename", required = false) String filename) {
+        try {
+            log.info("收到流式下载请求, url: {}, filename: {}", url, filename);
+
+            InputStream inputStream;
+            String contentType = null;
+
+            // 判断是否是OSS/MinIO的URL（需要认证）
+            if (isStorageServiceUrl(url)) {
+                log.debug("检测到存储服务URL，使用StorageService下载");
+                try {
+                    inputStream = storageService.download(url);
+                    // StorageService下载后，根据URL推断contentType
+                    contentType = inferContentTypeFromUrl(url);
+                } catch (Exception e) {
+                    log.error("StorageService下载失败，尝试普通下载", e);
+                    // 如果StorageService失败，fallback到普通下载
+                    URLConnection connection = openUrlConnection(url);
+                    inputStream = connection.getInputStream();
+                    contentType = inferContentTypeFromUrl(url);
+                }
+            } else {
+                // 普通URL，使用URLConnection下载
+                log.debug("使用普通URLConnection下载");
+                URLConnection connection = openUrlConnection(url);
+                contentType = connection.getContentType();
+                inputStream = connection.getInputStream();
+            }
+
+            // 如果contentType为空，根据URL推断
+            if (contentType == null || contentType.isBlank()) {
+                contentType = inferContentTypeFromUrl(url);
+            }
+
+            String safeFilename = (filename == null || filename.isBlank()) ? "download" : filename;
+            String encodedFilename = URLEncoder.encode(safeFilename, StandardCharsets.UTF_8).replace("+", "%20");
+            String contentDisposition = "attachment; filename*=UTF-8''" + encodedFilename;
+
+            InputStreamResource resource = new InputStreamResource(inputStream);
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition)
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+        } catch (Exception e) {
+            log.error("流式下载失败", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * 判断URL是否是存储服务（OSS/MinIO）的URL
+     */
+    private boolean isStorageServiceUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+        try {
+            URL urlObj = new URL(url);
+            String host = urlObj.getHost().toLowerCase();
+            
+            // 检查是否是OSS域名（包含oss或aliyuncs）
+            if (host.contains("oss") || host.contains("aliyuncs.com")) {
+                return true;
+            }
+            
+            // 检查是否是MinIO域名（如果配置了）
+            if (storageProperties.getOss() != null && storageProperties.getOss().getBucket() != null) {
+                String bucket = storageProperties.getOss().getBucket().toLowerCase();
+                if (host.contains(bucket)) {
+                    return true;
+                }
+            }
+            
+            return false;
+        } catch (Exception e) {
+            log.warn("判断URL类型失败: {}", url, e);
+            return false;
+        }
+    }
+
+    /**
+     * 通过URLConnection下载（用于非存储服务的URL）
+     */
+    private URLConnection openUrlConnection(String url) throws Exception {
+        URL targetUrl = new URL(url);
+        URLConnection connection = targetUrl.openConnection();
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(120000);
+        return connection;
+    }
+
+    /**
+     * 根据URL推断ContentType
+     */
+    private String inferContentTypeFromUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return "application/octet-stream";
+        }
+        String urlStr = url.toLowerCase();
+        if (urlStr.endsWith(".png")) {
+            return "image/png";
+        } else if (urlStr.endsWith(".jpg") || urlStr.endsWith(".jpeg")) {
+            return "image/jpeg";
+        } else if (urlStr.endsWith(".gif")) {
+            return "image/gif";
+        } else if (urlStr.endsWith(".webp")) {
+            return "image/webp";
+        } else if (urlStr.endsWith(".mp4")) {
+            return "video/mp4";
+        } else if (urlStr.endsWith(".mov")) {
+            return "video/quicktime";
+        } else if (urlStr.endsWith(".avi")) {
+            return "video/x-msvideo";
+        } else {
+            return "application/octet-stream";
         }
     }
 

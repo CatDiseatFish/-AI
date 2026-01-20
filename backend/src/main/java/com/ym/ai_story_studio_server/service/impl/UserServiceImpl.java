@@ -84,4 +84,5 @@ public class UserServiceImpl implements UserService {
             log.info("无需更新用户信息: userId={}", userId);
         }
     }
+
 }

@@ -44,6 +44,10 @@ api.interceptors.request.use(
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    const apiKey = localStorage.getItem('ai_api_key')
+    if (apiKey && config.headers) {
+      config.headers['X-Api-Key'] = apiKey
+    }
     return config
   },
   (error: AxiosError) => {
@@ -58,6 +62,17 @@ api.interceptors.response.use(
 
     if (code === 200) {
       return data as any // Extract data from Result wrapper
+    }
+
+    if (code === 40001 && message && message.includes('API密钥')) {
+      const shouldOpen = window.confirm('未设置API密钥，是否现在设置？')
+      if (shouldOpen) {
+        window.dispatchEvent(new CustomEvent('ai-api-key-required'))
+      }
+      const friendlyMsg = '请先设置API密钥'
+      // @ts-expect-error window.$message is provided by Naive UI
+      window.$message?.error(friendlyMsg)
+      return Promise.reject(new Error(friendlyMsg))
     }
 
     // Business error - 转换为友好提示

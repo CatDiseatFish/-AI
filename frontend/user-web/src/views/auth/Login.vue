@@ -15,6 +15,9 @@ const userStore = useUserStore()
 const phone = ref('')
 const verifyCode = ref('')
 const inviteCode = ref('')
+const captchaId = ref('')
+const captchaCode = ref('')
+const captchaImage = ref('')
 const loading = ref(false)
 const sendingCode = ref(false)
 const countdown = ref(0)
@@ -26,6 +29,7 @@ onMounted(() => {
   if (codeFromRoute) {
     inviteCode.value = codeFromRoute
   }
+  loadCaptcha()
 })
 
 let countdownTimer: number | null = null
@@ -35,7 +39,11 @@ const isPhoneValid = computed(() => {
 })
 
 const canSendCode = computed(() => {
-  return isPhoneValid.value && countdown.value === 0 && !sendingCode.value
+  return isPhoneValid.value
+    && captchaId.value.length > 0
+    && captchaCode.value.length === 4
+    && countdown.value === 0
+    && !sendingCode.value
 })
 
 const canLogin = computed(() => {
@@ -58,6 +66,17 @@ const startCountdown = () => {
   }, 1000)
 }
 
+const loadCaptcha = async () => {
+  try {
+    const data = await authApi.getCaptcha()
+    captchaId.value = data.captchaId
+    captchaImage.value = data.imageBase64
+    captchaCode.value = ''
+  } catch (error: any) {
+    errorMessage.value = error.message || '获取图形验证码失败，请重试'
+  }
+}
+
 const handleSendCode = async () => {
   if (!canSendCode.value) return
 
@@ -65,10 +84,17 @@ const handleSendCode = async () => {
   sendingCode.value = true
 
   try {
-    await authApi.sendCode({ phone: phone.value })
+    await authApi.sendCode({
+      phone: phone.value,
+      captchaId: captchaId.value,
+      captchaCode: captchaCode.value,
+    })
     startCountdown()
+    captchaCode.value = ''
+    await loadCaptcha()
   } catch (error: any) {
     errorMessage.value = error.message || '发送验证码失败，请稍后重试'
+    await loadCaptcha()
   } finally {
     sendingCode.value = false
   }
@@ -102,6 +128,12 @@ const handleCodeInput = (e: Event) => {
   // Only allow digits
   target.value = target.value.replace(/\D/g, '').slice(0, 6)
   verifyCode.value = target.value
+}
+
+const handleCaptchaInput = (e: Event) => {
+  const target = e.target as HTMLInputElement
+  target.value = target.value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4)
+  captchaCode.value = target.value
 }
 
 const handleKeydown = (e: KeyboardEvent, action: 'sendCode' | 'login') => {
@@ -146,6 +178,37 @@ const handleKeydown = (e: KeyboardEvent, action: 'sendCode' | 'login') => {
             @input="handlePhoneInput"
             @keydown="(e) => handleKeydown(e, 'sendCode')"
           >
+        </div>
+
+        <!-- Verification code input with send button -->
+        <div class="mb-4">
+          <label class="block text-text-secondary text-sm mb-2">图形验证码</label>
+          <div class="flex gap-2 items-center">
+            <input
+              :value="captchaCode"
+              type="text"
+              inputmode="text"
+              placeholder="请输入图形验证码"
+              maxlength="4"
+              class="input flex-1"
+              @input="handleCaptchaInput"
+              @keydown="(e) => handleKeydown(e, 'sendCode')"
+            >
+            <button
+              class="btn btn-secondary whitespace-nowrap"
+              type="button"
+              @click="loadCaptcha"
+            >
+              刷新
+            </button>
+            <img
+              v-if="captchaImage"
+              :src="captchaImage"
+              alt="图形验证码"
+              class="h-10 w-28 rounded-md border border-white/10 bg-white"
+              @click="loadCaptcha"
+            >
+          </div>
         </div>
 
         <!-- Verification code input with send button -->

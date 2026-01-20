@@ -2,16 +2,21 @@ package com.ym.ai_story_studio_server.controller;
 
 import com.ym.ai_story_studio_server.annotation.NoAuth;
 import com.ym.ai_story_studio_server.common.Result;
+import com.ym.ai_story_studio_server.dto.auth.CaptchaResponse;
 import com.ym.ai_story_studio_server.dto.auth.PhoneLoginRequest;
 import com.ym.ai_story_studio_server.dto.auth.PhoneLoginVO;
 import com.ym.ai_story_studio_server.dto.auth.SendCodeRequest;
 import com.ym.ai_story_studio_server.service.AuthService;
+import com.ym.ai_story_studio_server.util.RedisUtil;
+import cn.hutool.captcha.LineCaptcha;
+import cn.hutool.captcha.CaptchaUtil;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 认证控制器
@@ -28,6 +33,9 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final RedisUtil redisUtil;
+
+    private static final long CAPTCHA_EXPIRE_SECONDS = 120;
 
     /**
      * 发送验证码
@@ -39,8 +47,21 @@ public class AuthController {
     @PostMapping("/phone/send-code")
     public Result<Void> sendCode(@Valid @RequestBody SendCodeRequest request) {
         log.info("收到发送验证码请求: phone={}", maskPhone(request.phone()));
-        authService.sendVerificationCode(request.phone());
+        authService.sendVerificationCode(request.phone(), request.captchaId(), request.captchaCode());
         return Result.success();
+    }
+
+    /**
+     * 获取图形验证码
+     */
+    @NoAuth
+    @GetMapping("/captcha")
+    public Result<CaptchaResponse> captcha() {
+        LineCaptcha captcha = CaptchaUtil.createLineCaptcha(120, 40, 4, 20);
+        String captchaId = UUID.randomUUID().toString().replace("-", "");
+        redisUtil.saveCaptcha(captchaId, captcha.getCode(), CAPTCHA_EXPIRE_SECONDS);
+        CaptchaResponse response = new CaptchaResponse(captchaId, captcha.getImageBase64Data());
+        return Result.success(response);
     }
 
     /**

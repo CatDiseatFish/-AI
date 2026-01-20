@@ -29,6 +29,8 @@ public interface ProjectPropService {
      */
     ProjectPropVO addPropToProject(Long userId, Long projectId, AddPropToProjectRequest request);
 
+    ProjectPropVO createCustomProp(Long userId, Long projectId, com.ym.ai_story_studio_server.dto.prop.CreateProjectPropRequest request);
+
     /**
      * 更新项目道具
      *

@@ -13,8 +13,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ym.ai_story_studio_server.client.VectorEngineClient;
 import com.ym.ai_story_studio_server.common.ResultCode;
 import com.ym.ai_story_studio_server.config.AiProperties;
+import com.ym.ai_story_studio_server.entity.Asset;
+import com.ym.ai_story_studio_server.entity.AssetRef;
+import com.ym.ai_story_studio_server.entity.AssetVersion;
 import com.ym.ai_story_studio_server.entity.Job;
 import com.ym.ai_story_studio_server.exception.BusinessException;
+import com.ym.ai_story_studio_server.mapper.AssetMapper;
+import com.ym.ai_story_studio_server.mapper.AssetRefMapper;
+import com.ym.ai_story_studio_server.mapper.AssetVersionMapper;
 import com.ym.ai_story_studio_server.mapper.JobMapper;
 import com.ym.ai_story_studio_server.util.UserContext;
 import jakarta.annotation.PostConstruct;
@@ -68,6 +74,9 @@ public class AsyncVideoTaskService {
     private final ChargingService chargingService;
     private final StorageService storageService;
     private final JobMapper jobMapper;
+    private final AssetMapper assetMapper;
+    private final AssetVersionMapper assetVersionMapper;
+    private final AssetRefMapper assetRefMapper;
     private final AiProperties aiProperties;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
@@ -122,7 +131,8 @@ public class AsyncVideoTaskService {
                             model != null ? model : "sora-2-all",
                             aspectRatio != null ? aspectRatio : "16:9",
                             duration,
-                            job.getUserId()
+                            job.getUserId(),
+                            null
                     );
                     
                 } catch (Exception e) {
@@ -164,6 +174,7 @@ public class AsyncVideoTaskService {
      * @param aspectRatio 画幅比例
      * @param duration 视频时长
      * @param userId 用户ID(用于积分扣费时设置UserContext)
+     * @param apiKey 临时API密钥(可选)
      */
     @Async("taskExecutor")
     public void pollVideoGenerationTask(
@@ -172,7 +183,8 @@ public class AsyncVideoTaskService {
             String model,
             String aspectRatio,
             Integer duration,
-            Long userId
+            Long userId,
+            String apiKey
     ) {
         log.info("========== 异步轮询任务启动 ==========");
         log.info("jobId: {}, apiTaskId: {}, userId: {}", jobId, apiTaskId, userId);
@@ -186,6 +198,9 @@ public class AsyncVideoTaskService {
         int pollCount = 0;
 
         try {
+            if (apiKey != null && !apiKey.isBlank()) {
+                UserContext.setApiKey(apiKey);
+            }
             while (pollCount < maxPollCount) {
                 pollCount++;
 
@@ -445,7 +460,8 @@ public class AsyncVideoTaskService {
                     metaData.put("prompt", prompt != null ? prompt : "");
                     metaData.put("resultUrl", ossVideoUrl);
                     Map<String, Object> merged = job.getMetaJson() != null && !job.getMetaJson().isBlank()
-                            ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                            ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                            })
                             : new HashMap<>();
                     merged.putAll(metaData);
                     job.setMetaJson(objectMapper.writeValueAsString(merged));
@@ -454,6 +470,9 @@ public class AsyncVideoTaskService {
                 }
 
                 jobMapper.updateById(job);
+
+                // 5. 将视频结果写入资产体系(assets/asset_versions/asset_refs)
+                persistVideoAssetIfPossible(job, ossVideoUrl, model, aspectRatio, userId);
             }
 
             log.info("========== 视频生成成功处理完成 ==========");
@@ -465,6 +484,120 @@ public class AsyncVideoTaskService {
             // ✅ 安全保障:确保清理UserContext(避免内存泄漏)
             UserContext.clear();
         }
+    }
+
+    private void persistVideoAssetIfPossible(Job job, String ossVideoUrl, String model, String aspectRatio, Long userId) {
+        if (job == null || ossVideoUrl == null || ossVideoUrl.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> meta = job.getMetaJson() != null && !job.getMetaJson().isBlank()
+                    ? objectMapper.readValue(job.getMetaJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                    })
+                    : java.util.Collections.emptyMap();
+            Object targetTypeObj = meta.get("targetType");
+            Object targetIdObj = meta.get("targetId");
+            String targetType = targetTypeObj != null ? String.valueOf(targetTypeObj) : null;
+            Long targetId = null;
+            if (targetIdObj instanceof Number n) {
+                targetId = n.longValue();
+            } else if (targetIdObj != null) {
+                try {
+                    targetId = Long.parseLong(String.valueOf(targetIdObj));
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (!"shot".equalsIgnoreCase(targetType) || targetId == null) {
+                log.info("视频任务没有targetType/targetId，跳过写入资产体系 - jobId: {}", job.getId());
+                return;
+            }
+
+            Long projectId = job.getProjectId();
+            if (projectId == null) {
+                log.info("视频任务没有projectId，跳过写入资产体系 - jobId: {}", job.getId());
+                return;
+            }
+
+            // 1) 找到该shot的视频资产（如果没有则创建）
+            Asset asset = assetMapper.selectOne(new LambdaQueryWrapper<Asset>()
+                    .eq(Asset::getProjectId, projectId)
+                    .eq(Asset::getOwnerType, "SHOT")
+                    .eq(Asset::getOwnerId, targetId)
+                    .eq(Asset::getAssetType, "VIDEO")
+                    .orderByDesc(Asset::getCreatedAt)
+                    .last("LIMIT 1"));
+
+            if (asset == null) {
+                asset = new Asset();
+                asset.setProjectId(projectId);
+                asset.setOwnerType("SHOT");
+                asset.setOwnerId(targetId);
+                asset.setAssetType("VIDEO");
+                assetMapper.insert(asset);
+            }
+
+            // 2) 创建新版本号
+            Integer maxVersionNo = assetVersionMapper.selectList(new LambdaQueryWrapper<AssetVersion>()
+                            .eq(AssetVersion::getAssetId, asset.getId())
+                            .orderByDesc(AssetVersion::getVersionNo)
+                            .last("LIMIT 1"))
+                    .stream()
+                    .findFirst()
+                    .map(AssetVersion::getVersionNo)
+                    .orElse(0);
+
+            AssetVersion version = new AssetVersion();
+            version.setAssetId(asset.getId());
+            version.setVersionNo(maxVersionNo + 1);
+            version.setSource("AI");
+            version.setProvider("OSS");
+            version.setUrl(ossVideoUrl);
+            version.setStatus("READY");
+            version.setCreatedBy(userId);
+            if (model != null || aspectRatio != null) {
+                String paramsJson = buildParamsJson(model, aspectRatio);
+                version.setParamsJson(paramsJson);
+            }
+            assetVersionMapper.insert(version);
+
+            // 3) upsert 当前版本引用
+            AssetRef ref = assetRefMapper.selectOne(new LambdaQueryWrapper<AssetRef>()
+                    .eq(AssetRef::getProjectId, projectId)
+                    .eq(AssetRef::getRefType, "SHOT_VIDEO_CURRENT")
+                    .eq(AssetRef::getRefOwnerId, targetId));
+            if (ref == null) {
+                ref = new AssetRef();
+                ref.setProjectId(projectId);
+                ref.setRefType("SHOT_VIDEO_CURRENT");
+                ref.setRefOwnerId(targetId);
+                ref.setAssetVersionId(version.getId());
+                assetRefMapper.insert(ref);
+            } else {
+                ref.setAssetVersionId(version.getId());
+                assetRefMapper.updateById(ref);
+            }
+
+            log.info("视频资产写入成功 - jobId: {}, shotId: {}, assetId: {}, versionId: {}",
+                    job.getId(), targetId, asset.getId(), version.getId());
+        } catch (Exception e) {
+            log.error("写入视频资产失败 - jobId: {}", job.getId(), e);
+        }
+    }
+
+    private String buildParamsJson(String model, String aspectRatio) {
+        StringBuilder json = new StringBuilder("{");
+        if (model != null) {
+            json.append("\"model\":\"").append(model).append("\"");
+        }
+        if (aspectRatio != null) {
+            if (model != null) {
+                json.append(",");
+            }
+            json.append("\"aspectRatio\":\"").append(aspectRatio).append("\"");
+        }
+        json.append("}");
+        return json.toString();
     }
 
     /**

@@ -26,4 +26,5 @@ public interface UserService {
      * @param request 更新请求
      */
     void updateProfile(Long userId, UpdateProfileRequest request);
+
 }

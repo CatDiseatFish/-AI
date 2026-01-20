@@ -16,6 +16,7 @@ import java.util.List;
  * @param model 模型名称(可选)
  * @param customPrompt 自定义提示词(可选，如果提供则使用，否则使用分镜剧本)
  * @param referenceImageUrls 参考图URL列表(可选，用于图生图)
+ * @param apiKey 临时API密钥(可选)
  * 
  * @author AI Story Studio
  * @since 1.0.0
@@ -28,6 +29,7 @@ public record SingleShotImageMessage(
         String aspectRatio,
         String model,
         String customPrompt,
-        List<String> referenceImageUrls
+        List<String> referenceImageUrls,
+        String apiKey
 ) implements Serializable {
 }

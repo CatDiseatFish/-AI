@@ -2,7 +2,7 @@ package com.ym.ai_story_studio_server.service.impl;
 
 import com.ym.ai_story_studio_server.service.SmsService;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
 
 /**
@@ -16,7 +16,7 @@ import org.springframework.stereotype.Service;
  */
 @Slf4j
 @Service
-@ConditionalOnProperty(name = "sms.provider", havingValue = "mock", matchIfMissing = true)
+@ConditionalOnExpression("'${sms.provider:mock}' == 'mock' || '${sms.provider:mock}' == 'false'")
 public class MockSmsServiceImpl implements SmsService {
 
     @Override

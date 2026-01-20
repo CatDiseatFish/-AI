@@ -355,7 +355,7 @@ public class ExportServiceImpl implements ExportService {
                 AssetRef assetRef = assetRefMapper.selectOne(
                         new LambdaQueryWrapper<AssetRef>()
                                 .eq(AssetRef::getProjectId, projectId)
-                                .eq(AssetRef::getRefType, "SCENE_CURRENT")
+                                .eq(AssetRef::getRefType, "LIB_SCENE_CURRENT")
                                 .eq(AssetRef::getRefOwnerId, scene.getLibrarySceneId())
                 );
 
